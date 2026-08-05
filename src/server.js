@@ -33,13 +33,15 @@ function sendJson(response, statusCode, payload) {
   response.end(JSON.stringify(payload));
 }
 
+const MAX_REQUEST_BODY_BYTES = 12 * 1024 * 1024;
+
 function readRequestBody(request) {
   return new Promise((resolve, reject) => {
     let body = "";
 
     request.on("data", (chunk) => {
       body += chunk;
-      if (body.length > 2 * 1024 * 1024) {
+      if (body.length > MAX_REQUEST_BODY_BYTES) {
         reject(new Error("Request body too large."));
       }
     });
@@ -88,7 +90,32 @@ function serveStatic(response, filePath, contentType) {
   response.end(content);
 }
 
-function callOpenAI(apiKey, userPrompt, gridUnit = 50) {
+const AI_MODELS = [
+  {
+    id: "gpt-4o-mini",
+    label: "GPT-4o mini",
+    description: "Fast default"
+  },
+  {
+    id: "gpt-4o",
+    label: "GPT-4o",
+    description: "Higher quality"
+  }
+];
+
+function getDefaultAiModel() {
+  return AI_MODELS[0].id;
+}
+
+function isSupportedAiModel(model) {
+  return AI_MODELS.some((entry) => entry.id === model);
+}
+
+function isSupportedImageDataUrl(value) {
+  return /^data:image\/(png|jpeg|jpg|webp|gif);base64,/i.test(String(value || ""));
+}
+
+function callOpenAI(apiKey, userPrompt, gridUnit = 50, model = getDefaultAiModel(), imageDataUrl = "") {
   const visX = (550 / gridUnit).toFixed(1);
   const visY = (350 / gridUnit).toFixed(1);
   const system = `You are a geometry markup generator for a 1100×700 canvas.
@@ -112,13 +139,37 @@ Rules:
 - Always convert math coordinates to canvas pixels before outputting.
 - Keep shapes within the visible range.
 - Use #1a1a2e (dark), #0d9488 (teal), #d97706 (amber), #dc2626 (red), #2563eb (blue) for variety.
+- If a reference image is attached, infer the main geometric structure from that image and approximate it with the supported markup primitives.
+- Treat a numeric annotation placed between two rays or near an angle arc as an angle measure, not a segment length. Preserve it as a nearby label and make the two lines meet at the intended vertex.
+- When a numeric angle label is present, use that number as the source of truth for the angle even if the picture is not drawn to scale or the sketch visually suggests a different angle.
+- Prefer constructing the geometry from explicit numeric labels first, then use the picture only to decide layout, orientation, and which objects are connected.
+- Treat a dot, cross, or marked point at the middle of a circle as the circle center. Prefer a circle centered on that point; include a point there when the center is explicitly marked.
+- If a line or segment passes through the marked center of a circle and reaches the circle on both sides, treat that line as a diameter and preserve that constraint in the generated geometry.
+- Preserve circle containment relationships from the diagram: if a point, segment, ray, label, or other geometry is drawn inside a circle, keep it inside that circle unless a numeric constraint clearly requires otherwise.
+- Likewise, if geometry is drawn outside a circle, do not move it inside the circle unless the labels or markings explicitly say it belongs on the circle or inside it.
+- Distinguish among geometry that is inside the circle, on the circumference, and outside the circle. Use the picture to preserve that relationship even when the sketch is rough.
+- If a line or segment has a number written along the segment itself, interpret that as a length label unless the number is clearly placed inside an angle wedge.
+- Preserve important labeled geometry markers from the image with supported primitives: use point for marked locations and label for visible text.
 - Output ONLY the markup lines. No explanation, no code fences.`;
 
+  const userContent = [];
+  const promptText = userPrompt || "Generate geometry markup that matches the attached reference image as closely as possible.";
+  userContent.push({ type: "text", text: promptText });
+  if (imageDataUrl) {
+    userContent.push({
+      type: "image_url",
+      image_url: {
+        url: imageDataUrl,
+        detail: "high"
+      }
+    });
+  }
+
   const body = JSON.stringify({
-    model: "gpt-4o-mini",
+    model,
     messages: [
       { role: "system", content: system },
-      { role: "user", content: userPrompt }
+      { role: "user", content: userContent }
     ],
     max_tokens: 1200,
     temperature: 0.3
@@ -215,6 +266,14 @@ function startServer({ rootDir, defaultMarkupFile, port }) {
         return;
       }
 
+      if (request.method === "GET" && requestUrl.pathname === "/api/ai-models") {
+        sendJson(response, 200, {
+          defaultModel: getDefaultAiModel(),
+          models: AI_MODELS
+        });
+        return;
+      }
+
       if (request.method === "POST" && requestUrl.pathname === "/api/render") {
         const body = await readRequestBody(request);
         const payload = body ? JSON.parse(body) : {};
@@ -269,11 +328,17 @@ function startServer({ rootDir, defaultMarkupFile, port }) {
         const payload = body ? JSON.parse(body) : {};
         const prompt = typeof payload.prompt === "string" ? payload.prompt.trim() : "";
         const gridUnit = Number.isFinite(Number(payload.gridUnit)) ? Math.max(1, Number(payload.gridUnit)) : 50;
-        if (!prompt) {
-          sendJson(response, 400, { error: "Missing prompt." });
+        const model = typeof payload.model === "string" && isSupportedAiModel(payload.model)
+          ? payload.model
+          : getDefaultAiModel();
+        const imageDataUrl = typeof payload.imageDataUrl === "string" && isSupportedImageDataUrl(payload.imageDataUrl)
+          ? payload.imageDataUrl
+          : "";
+        if (!prompt && !imageDataUrl) {
+          sendJson(response, 400, { error: "Missing prompt or reference image." });
           return;
         }
-        const markup = await callOpenAI(apiKey, prompt, gridUnit);
+        const markup = await callOpenAI(apiKey, prompt, gridUnit, model, imageDataUrl);
         sendJson(response, 200, { markup });
         return;
       }

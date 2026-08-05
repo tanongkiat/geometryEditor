@@ -4,17 +4,66 @@ const markupOutput = document.getElementById("markupOutput");
 const statusEl = document.getElementById("status");
 const selectBtn = document.getElementById("selectBtn");
 const lineBtn = document.getElementById("lineBtn");
+const pointBtn = document.getElementById("pointBtn");
 const circleBtn = document.getElementById("circleBtn");
+const parabolaBtn = document.getElementById("parabolaBtn");
 const labelBtn = document.getElementById("labelBtn");
 const angleBtn = document.getElementById("angleBtn");
 const deleteBtn = document.getElementById("deleteBtn");
 const undoBtn = document.getElementById("undoBtn");
 const clearBtn = document.getElementById("clearBtn");
 const copyBtn = document.getElementById("copyBtn");
+const rebuildVerticesBtn = document.getElementById("rebuildVerticesBtn");
+const removeVerticesBtn = document.getElementById("removeVerticesBtn");
+const moveBtn = document.getElementById("moveBtn");
 const snapInfoEl = document.getElementById("snapInfo");
+const equationLegendEl = document.getElementById("equationLegend");
+const equationLegendTitleEl = document.getElementById("equationLegendTitle");
+const equationLegendTextEl = document.getElementById("equationLegendText");
+const equationLegendEditorEl = document.getElementById("equationLegendEditor");
+const solverLegendEl = document.getElementById("solverLegend");
+const verticesLinesBtn = document.getElementById("verticesLinesBtn");
+const allVerticesAnglesBtn = document.getElementById("allVerticesAnglesBtn");
 const colorPickerEl = document.getElementById("colorPicker");
 const colorHexEl = document.getElementById("colorHex");
 const quickColorButtons = Array.from(document.querySelectorAll(".quick-color-btn"));
+const topLegendDetailsEls = Array.from(document.querySelectorAll("details.top-legend, details.top-shortcuts"));
+
+let equationEditTimer = null;
+
+if (equationLegendEditorEl) {
+  equationLegendEditorEl.addEventListener("input", (event) => {
+    if (event.target instanceof HTMLInputElement && event.target.matches("input[data-equation-field]")) {
+      scheduleEquationEditApply();
+    }
+  });
+
+  equationLegendEditorEl.addEventListener("change", (event) => {
+    if (event.target instanceof HTMLInputElement && event.target.matches("input[data-equation-field]")) {
+      scheduleEquationEditApply();
+    }
+  });
+}
+
+if (equationLegendTextEl) {
+  equationLegendTextEl.addEventListener("click", () => {
+    const editable = getEditableSelectionGroup();
+    if (!editable) {
+      return;
+    }
+
+    state.equationEditMode = true;
+    updateEquationLegend();
+
+    requestAnimationFrame(() => {
+      const firstInput = equationLegendEditorEl?.querySelector("input[data-equation-field]");
+      if (firstInput instanceof HTMLInputElement) {
+        firstInput.focus();
+        firstInput.select();
+      }
+    });
+  });
+}
 
 const ctx = canvas.getContext("2d");
 
@@ -42,7 +91,19 @@ const state = {
   snapToGrid: false,
   selection: new Set(),  // Set of shape objects; multi-click expands level
   anglePrecision: 0,
-  showArcDiffs: false
+  showArcDiffs: false,
+  showVertexLines: false,
+  showAllVertexAngles: false,
+  equationEditMode: false,
+  parabolaDrafting: false,
+  parabolaStage: null,
+  parabolaVertexPoint: null,
+  referenceImage: null,
+  imageCirclePick: null,
+  imageDebugOverlay: null,
+  showImageDebugOverlay: true,
+  moveDragPoint: null,
+  moveDidChange: false
 };
 
 function resizeCanvasToFit() {
@@ -82,6 +143,42 @@ function setSnapInfo(text) {
   snapInfoEl.textContent = text;
 }
 
+function closeTopLegendsOnOutsideClick(event) {
+  if (topLegendDetailsEls.length === 0) {
+    return;
+  }
+
+  const target = event.target;
+  if (!(target instanceof Node)) {
+    return;
+  }
+
+  const clickedInsideLegend = topLegendDetailsEls.some((legend) => legend.contains(target));
+  if (clickedInsideLegend) {
+    return;
+  }
+
+  for (const legend of topLegendDetailsEls) {
+    if (legend.open) {
+      legend.open = false;
+    }
+  }
+}
+
+function syncSolverUi() {
+  if (!verticesLinesBtn || !allVerticesAnglesBtn) {
+    return;
+  }
+
+  verticesLinesBtn.classList.toggle("is-active", state.showVertexLines);
+  verticesLinesBtn.textContent = state.showVertexLines ? "On" : "Off";
+  allVerticesAnglesBtn.classList.toggle("is-active", state.showAllVertexAngles);
+  allVerticesAnglesBtn.textContent = state.showAllVertexAngles ? "On" : "Off";
+  if (solverLegendEl && (state.showVertexLines || state.showAllVertexAngles)) {
+    solverLegendEl.open = true;
+  }
+}
+
 function syncColorUi() {
   if (colorPickerEl) {
     colorPickerEl.value = state.color;
@@ -107,6 +204,20 @@ function setDrawingColor(value) {
   syncColorUi();
   setStatus(`Color set to ${state.color.toUpperCase()}.`);
   return true;
+}
+
+function toggleVertexLines() {
+  state.showVertexLines = !state.showVertexLines;
+  syncSolverUi();
+  render(state.lastPointerPoint);
+  setStatus(`Vertices lines ${state.showVertexLines ? "on" : "off"}.`);
+}
+
+function toggleAllVertexAngles() {
+  state.showAllVertexAngles = !state.showAllVertexAngles;
+  syncSolverUi();
+  render(state.lastPointerPoint);
+  setStatus(`All vertices angles ${state.showAllVertexAngles ? "on" : "off"}.`);
 }
 
 function kindLabel(kind) {
@@ -157,6 +268,15 @@ function applyLineAxisConstraint(start, point) {
   };
 }
 
+function mathToCanvasPoint(point) {
+  const ox = Math.round(state.logicalWidth / 2);
+  const oy = Math.round(state.logicalHeight / 2);
+  return {
+    x: Math.round(ox + point.x * state.gridUnit),
+    y: Math.round(oy - point.y * state.gridUnit)
+  };
+}
+
 function snapInfoText(activeText) {
   return `Snap mode: ${snapModeLabel()} | ${activeText}`;
 }
@@ -181,14 +301,23 @@ function setMode(mode) {
   state.angleAnalysis = null;
   state.hoverPoint = null;
   state.isDragging = false;
-  if (mode !== "select") state.selection.clear();
+  state.parabolaDrafting = false;
+  state.parabolaStage = null;
+  state.parabolaVertexPoint = null;
+  state.moveDragPoint = null;
+  state.moveDidChange = false;
+  state.equationEditMode = false;
+  if (mode !== "select" && mode !== "move") state.selection.clear();
+  updateEquationLegend();
 
   selectBtn.classList.toggle("is-active", mode === "select");
+  moveBtn.classList.toggle("is-active", mode === "move");
   lineBtn.classList.toggle("is-active", mode === "line");
+  pointBtn.classList.toggle("is-active", mode === "point");
   circleBtn.classList.toggle("is-active", mode === "circle");
+  parabolaBtn.classList.toggle("is-active", mode === "parabola");
   labelBtn.classList.toggle("is-active", mode === "label");
   angleBtn.classList.toggle("is-active", mode === "angle");
-  deleteBtn.classList.toggle("is-active", mode === "delete");
 
   if (mode === "line") {
     setSnapInfo(snapInfoText("target: none"));
@@ -202,6 +331,26 @@ function setMode(mode) {
     return;
   }
 
+  if (mode === "parabola") {
+    setSnapInfo(snapInfoText("vertex / axis focus / curve"));
+    setStatus("Parabola mode: press and drag the lowest point first, release, then drag the C point and press again to finish.");
+    return;
+  }
+
+  if (mode === "point") {
+    setSnapInfo(snapInfoText("point / line / circle"));
+    setStatus("Point mode: click to place a point. Snap stays active unless Shift is held.");
+    return;
+  }
+
+  if (mode === "move") {
+    setSnapInfo(snapInfoText("selected geometry"));
+    setStatus(state.selection.size > 0
+      ? "Move mode: drag the selected geometry to reposition it."
+      : "Move mode: select geometry first, then drag it to reposition.");
+    return;
+  }
+
   if (mode === "label") {
     setSnapInfo(snapInfoText("line mode only"));
     setStatus("Label mode: click on canvas to place a label.");
@@ -211,12 +360,6 @@ function setMode(mode) {
   if (mode === "angle") {
     setSnapInfo(snapInfoText("line mode only"));
     setStatus("Angle mode: click a point to calculate each connected ray angle to +X axis.");
-    return;
-  }
-
-  if (mode === "delete") {
-    setSnapInfo(snapInfoText("line mode only"));
-    setStatus("Delete mode: click a point to remove it with its connected lines. Circle centre removes the circle.");
     return;
   }
 
@@ -239,6 +382,82 @@ function cloneShapes(shapes) {
   return shapes.map((shape) => ({ ...shape }));
 }
 
+function hasSimilarCircleShape(candidate, tolerance = 8) {
+  for (const shape of state.shapes) {
+    if (shape.type !== "circle") {
+      continue;
+    }
+
+    const centerDistance = Math.hypot(shape.cx - candidate.cx, shape.cy - candidate.cy);
+    const radiusDelta = Math.abs(shape.r - candidate.r);
+    if (centerDistance <= tolerance && radiusDelta <= tolerance) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function tryImportCircleFromImageClick(canvasPoint) {
+  const pick = state.imageCirclePick;
+  if (!pick || !Array.isArray(pick.circles) || pick.circles.length === 0) {
+    return false;
+  }
+
+  const mathPoint = canvasToMathPoint(canvasPoint);
+  const detectX = pick.transform.imageCenterX + (mathPoint.x / pick.transform.unitsPerPixel);
+  const detectY = pick.transform.imageCenterY - (mathPoint.y / pick.transform.unitsPerPixel);
+
+  if (detectX < 0 || detectY < 0 || detectX >= pick.detectWidth || detectY >= pick.detectHeight) {
+    setStatus("Click inside the reference geometry region.", true);
+    return true;
+  }
+
+  const dx = Math.round(detectX);
+  const dy = Math.round(detectY);
+  const idx = dy * pick.detectWidth + dx;
+  const isDark = pick.mask[idx] === 1 || pick.gray[idx] < pick.threshold;
+  if (!isDark) {
+    setStatus("Clicked pixel is not dark geometry. Try on the circle stroke.", true);
+    return true;
+  }
+
+  let best = null;
+  let bestScore = Infinity;
+  for (const circle of pick.circles) {
+    const distCenter = Math.hypot(detectX - circle.detectCx, detectY - circle.detectCy);
+    const edgeError = Math.abs(distCenter - circle.detectR);
+    const edgeTolerance = Math.max(6, circle.detectR * 0.28);
+    const centerTolerance = Math.max(5, circle.detectR * 0.34);
+
+    if (edgeError <= edgeTolerance || distCenter <= centerTolerance) {
+      if (edgeError < bestScore) {
+        bestScore = edgeError;
+        best = circle;
+      }
+    }
+  }
+
+  if (!best) {
+    setStatus("Dark pixel found, but no detected circle at that location.", true);
+    return true;
+  }
+
+  if (hasSimilarCircleShape(best)) {
+    setStatus("That detected circle is already on canvas.");
+    return true;
+  }
+
+  pushUndoSnapshot();
+  addCircleCore(best.cx, best.cy, best.r, state.color);
+  removeDuplicatePointShapes();
+  rebuildMarkup();
+  render();
+
+  setStatus(`Added detected circle at (${best.cx}, ${best.cy}) with r=${best.r}.`);
+  return true;
+}
+
 function pushUndoSnapshot() {
   state.actions.push(cloneShapes(state.shapes));
 }
@@ -250,6 +469,544 @@ function formatNumber(value) {
   return String(Number(value.toFixed(3)));
 }
 
+function formatAngle(value) {
+  return String(Number(value.toFixed(state.anglePrecision)) % 360);
+}
+
+function formatMathNumber(value) {
+  if (!Number.isFinite(value)) {
+    return "0";
+  }
+
+  const rounded = Math.abs(value) < 1e-9 ? 0 : value;
+  return String(Number(rounded.toFixed(2)));
+}
+
+function canvasToMathPoint(point) {
+  const ox = Math.round(state.logicalWidth / 2);
+  const oy = Math.round(state.logicalHeight / 2);
+  return {
+    x: Number(((point.x - ox) / state.gridUnit).toFixed(2)),
+    y: Number(((oy - point.y) / state.gridUnit).toFixed(2))
+  };
+}
+
+function formatSignedTerm(value, symbol) {
+  if (nearlyEqual(value, 0)) {
+    return `${symbol}`;
+  }
+
+  return value > 0
+    ? `${symbol} - ${formatMathNumber(value)}`
+    : `${symbol} + ${formatMathNumber(Math.abs(value))}`;
+}
+
+function formatDirectionTerm(symbol, value, positiveDirection) {
+  if (nearlyEqual(value, 0)) {
+    return symbol;
+  }
+
+  const formattedValue = formatMathNumber(Math.abs(value));
+  if (positiveDirection) {
+    return value > 0 ? `${symbol} - ${formattedValue}` : `${symbol} + ${formattedValue}`;
+  }
+
+  return value > 0 ? `${formattedValue} - ${symbol}` : `(${formatMathNumber(value)}) - ${symbol}`;
+}
+
+function lineEquation(shape) {
+  const p1 = canvasToMathPoint({ x: shape.x1, y: shape.y1 });
+  const p2 = canvasToMathPoint({ x: shape.x2, y: shape.y2 });
+  if (nearlyEqual(p1.x, p2.x)) {
+    return `x = ${formatMathNumber(p1.x)}`;
+  }
+
+  const slope = (p2.y - p1.y) / (p2.x - p1.x);
+  const intercept = p1.y - slope * p1.x;
+  if (nearlyEqual(slope, 0)) {
+    return `y = ${formatMathNumber(p1.y)}`;
+  }
+
+  const m = formatMathNumber(slope);
+  if (nearlyEqual(intercept, 0)) {
+    return `y = ${m}x`;
+  }
+
+  const sign = intercept > 0 ? "+" : "-";
+  return `y = ${m}x ${sign} ${formatMathNumber(Math.abs(intercept))}`;
+}
+
+function circleEquation(shape) {
+  const center = canvasToMathPoint({ x: shape.cx, y: shape.cy });
+  const radius = Number((shape.r / state.gridUnit).toFixed(2));
+  return `(${formatSignedTerm(center.x, "x")})^2 + (${formatSignedTerm(center.y, "y")})^2 = ${formatMathNumber(radius)}^2`;
+}
+
+function pointEquation(shape) {
+  const point = canvasToMathPoint(shape);
+  return `(${formatMathNumber(point.x)}, ${formatMathNumber(point.y)})`;
+}
+
+function parabolaEquation(shape) {
+  const basis = parabolaBasis(shape);
+
+  if (!basis) {
+    return "Parabola needs a distinct focus point.";
+  }
+
+  const vertex = canvasToMathPoint({ x: shape.vx, y: shape.vy });
+  const A = formatMathNumber((4 * basis.p) / state.gridUnit);
+  const B = vertex.x * basis.ux + vertex.y * basis.uy;
+  const perpendicular = [
+    formatRotatedTerm(-basis.uy, "x"),
+    formatRotatedTerm(basis.ux, "y")
+  ].filter(Boolean).join(" + ").replace(/\+ -/g, "- ");
+  const parallel = [
+    formatRotatedTerm(basis.ux, "x"),
+    formatRotatedTerm(basis.uy, "y")
+  ].filter(Boolean).join(" + ").replace(/\+ -/g, "- ");
+
+  return `(${perpendicular})^2 = ${A}(${formatShiftedExpression(parallel, B)})`;
+}
+
+function formatRotatedTerm(coefficient, expression) {
+  if (nearlyEqual(coefficient, 0)) {
+    return "";
+  }
+
+  const sign = coefficient < 0 ? "-" : "";
+  const magnitude = nearlyEqual(Math.abs(coefficient), 1) ? "" : formatMathNumber(Math.abs(coefficient));
+  return `${sign}${magnitude}${expression}`;
+}
+
+function labelEquation(shape) {
+  return String(shape.text || "Label");
+}
+
+function describeShapeEquation(shape) {
+  if (shape.type === "line") {
+    return `Line ${shape.id}: ${lineEquation(shape)}`;
+  }
+
+  if (shape.type === "circle") {
+    return `Circle ${shape.id}: ${circleEquation(shape)}`;
+  }
+
+  if (shape.type === "point") {
+    return `Point ${shape.id}: ${pointEquation(shape)}`;
+  }
+
+  if (shape.type === "parabola") {
+    return `Parabola ${shape.id}: ${parabolaEquation(shape)}`;
+  }
+
+  if (shape.type === "label") {
+    return `Label ${shape.id}: ${labelEquation(shape)}`;
+  }
+
+  return "";
+}
+
+function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function formatEquationLegendHtml(text) {
+  return escapeHtml(text)
+    .replace(/\^(-?\d+(?:\.\d+)?)/g, "<sup>$1</sup>")
+    .replace(/\n/g, "<br>");
+}
+
+function formatShiftedExpression(expression, value) {
+  if (nearlyEqual(value, 0)) {
+    return expression;
+  }
+
+  return value > 0 ? `${expression} - ${formatMathNumber(value)}` : `${expression} + ${formatMathNumber(Math.abs(value))}`;
+}
+
+function updateEquationLegend() {
+  if (!equationLegendEl || !equationLegendTitleEl || !equationLegendTextEl) {
+    return;
+  }
+
+  if (state.mode !== "select") {
+    equationLegendTitleEl.textContent = "Selection equation";
+    equationLegendTextEl.textContent = "Switch to Select mode to inspect equations from the canvas.";
+    if (equationLegendEditorEl) equationLegendEditorEl.innerHTML = "";
+    equationLegendTextEl.classList.remove("is-clickable");
+    state.equationEditMode = false;
+    return;
+  }
+
+  const selectedShapes = Array.from(state.selection);
+  if (selectedShapes.length === 0) {
+    equationLegendTitleEl.textContent = "Selection equation";
+    equationLegendTextEl.textContent = "Select a line, circle, point, or label to see its equation here.";
+    if (equationLegendEditorEl) equationLegendEditorEl.innerHTML = "";
+    equationLegendTextEl.classList.remove("is-clickable");
+    state.equationEditMode = false;
+    return;
+  }
+
+  if (selectedShapes.some((shape) => shape.type === "line" || shape.type === "circle" || shape.type === "parabola")) {
+    equationLegendEl.open = true;
+  }
+
+  const editable = getEditableSelectionGroup();
+  const displayShapes = editable ? [editable.shape] : selectedShapes;
+  const formulas = displayShapes
+    .map(describeShapeEquation)
+    .filter(Boolean);
+
+  equationLegendTitleEl.textContent = formulas.length === 1 ? "Selection equation" : `Selection equations (${formulas.length})`;
+  equationLegendTextEl.innerHTML = formatEquationLegendHtml(formulas.join("\n"));
+  equationLegendTextEl.classList.toggle("is-clickable", Boolean(editable && !state.equationEditMode));
+
+  if (equationLegendEditorEl) {
+    equationLegendEditorEl.innerHTML = editable && state.equationEditMode
+      ? renderEquationEditor(editable)
+      : editable
+        ? `<div class="legend-editor-note">Click the equation above to edit values.</div>`
+        : "";
+  }
+}
+
+function getEditableSelectionGroup() {
+  const selectedShapes = Array.from(state.selection);
+  if (selectedShapes.length === 0) {
+    return null;
+  }
+
+  const first = selectedShapes[0];
+  if (!first || !["line", "circle", "parabola"].includes(first.type)) {
+    return null;
+  }
+
+  const baseId = shapeBaseId(first.id);
+  if (!selectedShapes.every((shape) => shape.type === first.type && shapeBaseId(shape.id) === baseId)) {
+    return null;
+  }
+
+  return {
+    type: first.type,
+    baseId,
+    shape: state.shapes.find((shape) => shape.type === first.type && shapeBaseId(shape.id) === baseId) || first
+  };
+}
+
+function renderEquationEditor(editable) {
+  const shape = editable.shape;
+  if (editable.type === "line") {
+    const p1 = canvasToMathPoint({ x: shape.x1, y: shape.y1 });
+    const p2 = canvasToMathPoint({ x: shape.x2, y: shape.y2 });
+    if (nearlyEqual(p1.x, p2.x)) {
+      const xValue = formatMathNumber(p1.x);
+      return `
+        <div class="legend-editor-form" data-equation-type="line">
+          <div class="legend-editor-row">x = <input class="legend-editor-input" data-equation-field="xConst" type="number" step="0.1" value="${escapeHtml(xValue)}"></div>
+          <div class="legend-editor-note">Edit the constant only. The line shifts horizontally and its linked points move with it.</div>
+        </div>
+      `;
+    }
+
+    const center = {
+      x: (p1.x + p2.x) / 2,
+      y: (p1.y + p2.y) / 2
+    };
+    const slope = (p2.y - p1.y) / (p2.x - p1.x);
+    const intercept = p1.y - slope * p1.x;
+    const slopeValue = formatMathNumber(slope);
+    return `
+      <div class="legend-editor-form legend-editor-grid" data-equation-type="line">
+        <label class="legend-editor-label">Slope m<input class="legend-editor-input" data-equation-field="slope" type="number" step="0.1" value="${escapeHtml(slopeValue)}"></label>
+        <label class="legend-editor-label">Intercept b<input class="legend-editor-input" data-equation-field="intercept" type="number" step="0.1" value="${escapeHtml(formatMathNumber(intercept))}"></label>
+      </div>
+      <div class="legend-editor-note">Edit m and b. The line keeps its length while its points move onto the new line.</div>
+    `;
+  }
+
+  if (editable.type === "circle") {
+    const center = canvasToMathPoint({ x: shape.cx, y: shape.cy });
+    const radius = Number((shape.r / state.gridUnit).toFixed(2));
+    return `
+      <div class="legend-editor-form legend-editor-grid" data-equation-type="circle">
+        <label class="legend-editor-label">Center x<input class="legend-editor-input" data-equation-field="centerX" type="number" step="0.1" value="${escapeHtml(formatMathNumber(center.x))}"></label>
+        <label class="legend-editor-label">Center y<input class="legend-editor-input" data-equation-field="centerY" type="number" step="0.1" value="${escapeHtml(formatMathNumber(center.y))}"></label>
+        <label class="legend-editor-label">Radius<input class="legend-editor-input" data-equation-field="radius" type="number" step="0.1" min="0.1" value="${escapeHtml(formatMathNumber(radius))}"></label>
+      </div>
+      <div class="legend-editor-note">Edit the constants only. The circle center and linked points move with the new values.</div>
+    `;
+  }
+
+  if (editable.type === "parabola") {
+    const vertex = canvasToMathPoint({ x: shape.vx, y: shape.vy });
+    const focus = canvasToMathPoint({ x: shape.fx, y: shape.fy });
+    return `
+      <div class="legend-editor-form legend-editor-grid legend-editor-grid-3" data-equation-type="parabola">
+        <label class="legend-editor-label">Vx<input class="legend-editor-input" data-equation-field="vertexX" type="number" step="0.1" value="${escapeHtml(formatMathNumber(vertex.x))}"></label>
+        <label class="legend-editor-label">Vy<input class="legend-editor-input" data-equation-field="vertexY" type="number" step="0.1" value="${escapeHtml(formatMathNumber(vertex.y))}"></label>
+        <label class="legend-editor-label">Cx<input class="legend-editor-input" data-equation-field="focusX" type="number" step="0.1" value="${escapeHtml(formatMathNumber(focus.x))}"></label>
+        <label class="legend-editor-label">Cy<input class="legend-editor-input" data-equation-field="focusY" type="number" step="0.1" value="${escapeHtml(formatMathNumber(focus.y))}"></label>
+      </div>
+      <div class="legend-editor-note">Edit V and C first. The parabola and its linked points update together.</div>
+    `;
+  }
+
+  return "";
+}
+
+function getLegendInputValue(name) {
+  const input = equationLegendEditorEl?.querySelector(`[data-equation-field="${name}"]`);
+  if (!input) {
+    return null;
+  }
+
+  const value = parseFloat(input.value);
+  return Number.isFinite(value) ? value : null;
+}
+
+function applyEquationEditToSelection() {
+  const editable = getEditableSelectionGroup();
+  if (!editable || !equationLegendEditorEl) {
+    return;
+  }
+
+  const baseId = editable.baseId;
+  const shapes = state.shapes.filter((shape) => shape.type === editable.type && shapeBaseId(shape.id) === baseId);
+  if (shapes.length === 0) {
+    return;
+  }
+
+  if (editable.type === "line") {
+    const shape = shapes[0];
+    const p1 = canvasToMathPoint({ x: shape.x1, y: shape.y1 });
+    const p2 = canvasToMathPoint({ x: shape.x2, y: shape.y2 });
+    const oldVertical = nearlyEqual(p1.x, p2.x);
+    const oldCenter = {
+      x: (p1.x + p2.x) / 2,
+      y: (p1.y + p2.y) / 2
+    };
+    const oldDir = oldVertical
+      ? { x: 0, y: 1 }
+      : {
+          x: (p2.x - p1.x) / Math.hypot(p2.x - p1.x, p2.y - p1.y),
+          y: (p2.y - p1.y) / Math.hypot(p2.x - p1.x, p2.y - p1.y)
+        };
+    const oldNormal = {
+      x: -oldDir.y,
+      y: oldDir.x
+    };
+
+    if (oldVertical) {
+      const xConst = getLegendInputValue("xConst");
+      if (xConst == null) return;
+      const deltaCanvasX = Math.round((xConst - p1.x) * state.gridUnit);
+      for (const target of shapes) {
+        target.x1 += deltaCanvasX;
+        target.x2 += deltaCanvasX;
+      }
+
+      for (const point of state.shapes) {
+        if (point.type !== "point" || shapeBaseId(point.id) !== baseId) {
+          continue;
+        }
+        point.x += deltaCanvasX;
+      }
+      return;
+    }
+
+    const newSlope = getLegendInputValue("slope");
+    const newIntercept = getLegendInputValue("intercept");
+    if (newSlope == null || newIntercept == null) {
+      return;
+    }
+
+    const dirLength = Math.hypot(1, newSlope);
+    const dir = {
+      x: 1 / dirLength,
+      y: newSlope / dirLength
+    };
+    const normal = {
+      x: -dir.y,
+      y: dir.x
+    };
+    const projectedCenter = {
+      x: (oldCenter.x + newSlope * (oldCenter.y - newIntercept)) / (1 + newSlope * newSlope),
+      y: newSlope * ((oldCenter.x + newSlope * (oldCenter.y - newIntercept)) / (1 + newSlope * newSlope)) + newIntercept
+    };
+    const centerDelta = {
+      x: projectedCenter.x - oldCenter.x,
+      y: projectedCenter.y - oldCenter.y
+    };
+
+    for (const target of shapes) {
+      const targetP1 = canvasToMathPoint({ x: target.x1, y: target.y1 });
+      const targetP2 = canvasToMathPoint({ x: target.x2, y: target.y2 });
+      const start = {
+        x: targetP1.x - oldCenter.x,
+        y: targetP1.y - oldCenter.y
+      };
+      const end = {
+        x: targetP2.x - oldCenter.x,
+        y: targetP2.y - oldCenter.y
+      };
+      const startAlong = start.x * oldDir.x + start.y * oldDir.y;
+      const startPerp = start.x * oldNormal.x + start.y * oldNormal.y;
+      const endAlong = end.x * oldDir.x + end.y * oldDir.y;
+      const endPerp = end.x * oldNormal.x + end.y * oldNormal.y;
+      const newStart = {
+        x: projectedCenter.x + startAlong * dir.x + startPerp * normal.x,
+        y: projectedCenter.y + startAlong * dir.y + startPerp * normal.y
+      };
+      const newEnd = {
+        x: projectedCenter.x + endAlong * dir.x + endPerp * normal.x,
+        y: projectedCenter.y + endAlong * dir.y + endPerp * normal.y
+      };
+
+      target.x1 = Math.round(state.logicalWidth / 2 + newStart.x * state.gridUnit);
+      target.y1 = Math.round(state.logicalHeight / 2 - newStart.y * state.gridUnit);
+      target.x2 = Math.round(state.logicalWidth / 2 + newEnd.x * state.gridUnit);
+      target.y2 = Math.round(state.logicalHeight / 2 - newEnd.y * state.gridUnit);
+    }
+
+    for (const point of state.shapes) {
+      if (point.type !== "point" || shapeBaseId(point.id) !== baseId) {
+        continue;
+      }
+
+      const pointMath = canvasToMathPoint({ x: point.x, y: point.y });
+      const offset = {
+        x: pointMath.x - oldCenter.x,
+        y: pointMath.y - oldCenter.y
+      };
+      const along = offset.x * oldDir.x + offset.y * oldDir.y;
+      const perp = offset.x * oldNormal.x + offset.y * oldNormal.y;
+      const next = {
+        x: projectedCenter.x + along * dir.x + perp * normal.x,
+        y: projectedCenter.y + along * dir.y + perp * normal.y
+      };
+      point.x = Math.round(state.logicalWidth / 2 + next.x * state.gridUnit);
+      point.y = Math.round(state.logicalHeight / 2 - next.y * state.gridUnit);
+    }
+    return;
+  }
+
+  if (editable.type === "circle") {
+    const shape = shapes[0];
+    const oldCenter = { x: shape.cx, y: shape.cy };
+    const oldRadius = shape.r;
+    const newCenterMath = {
+      x: getLegendInputValue("centerX"),
+      y: getLegendInputValue("centerY")
+    };
+    const newRadiusMath = getLegendInputValue("radius");
+    if (newCenterMath.x == null || newCenterMath.y == null || newRadiusMath == null || newRadiusMath < 0) {
+      return;
+    }
+
+    const newCenter = mathToCanvasPoint(newCenterMath);
+    const newRadius = Math.round(newRadiusMath * state.gridUnit);
+    const radiusScale = oldRadius > 0 ? newRadius / oldRadius : 1;
+
+    for (const target of shapes) {
+      target.cx = newCenter.x;
+      target.cy = newCenter.y;
+      target.r = newRadius;
+    }
+
+    for (const point of state.shapes) {
+      if (point.type !== "point" || shapeBaseId(point.id) !== baseId) {
+        continue;
+      }
+
+      if (pointMatches({ x: point.x, y: point.y }, oldCenter)) {
+        point.x = newCenter.x;
+        point.y = newCenter.y;
+      } else {
+        const dx = point.x - oldCenter.x;
+        const dy = point.y - oldCenter.y;
+        point.x = newCenter.x + dx * radiusScale;
+        point.y = newCenter.y + dy * radiusScale;
+      }
+    }
+    return;
+  }
+
+  if (editable.type === "parabola") {
+    const shape = shapes[0];
+    const oldVertex = { x: shape.vx, y: shape.vy };
+    const oldFocus = { x: shape.fx, y: shape.fy };
+    const vertexMath = {
+      x: getLegendInputValue("vertexX"),
+      y: getLegendInputValue("vertexY")
+    };
+    const focusMath = {
+      x: getLegendInputValue("focusX"),
+      y: getLegendInputValue("focusY")
+    };
+
+    if (vertexMath.x == null || vertexMath.y == null || focusMath.x == null || focusMath.y == null) {
+      return;
+    }
+
+    const newVertexMath = vertexMath;
+    const newFocusMath = focusMath;
+
+    if (Math.hypot(newFocusMath.x - newVertexMath.x, newFocusMath.y - newVertexMath.y) < 0.01) {
+      return;
+    }
+
+    const newVertex = mathToCanvasPoint(newVertexMath);
+    const newFocus = mathToCanvasPoint(newFocusMath);
+
+    for (const target of shapes) {
+      target.vx = newVertex.x;
+      target.vy = newVertex.y;
+      target.fx = newFocus.x;
+      target.fy = newFocus.y;
+    }
+
+    for (const point of state.shapes) {
+      if (point.type !== "point" || shapeBaseId(point.id) !== baseId) {
+        continue;
+      }
+
+      if (pointMatches({ x: point.x, y: point.y }, oldVertex)) {
+        point.x = newVertex.x;
+        point.y = newVertex.y;
+      } else if (pointMatches({ x: point.x, y: point.y }, oldFocus)) {
+        point.x = newFocus.x;
+        point.y = newFocus.y;
+      }
+    }
+  }
+}
+
+function scheduleEquationEditApply() {
+  clearTimeout(equationEditTimer);
+  equationEditTimer = setTimeout(() => {
+    const editable = getEditableSelectionGroup();
+    if (!editable) {
+      return;
+    }
+
+    pushUndoSnapshot();
+    applyEquationEditToSelection();
+    rebuildMarkup();
+    markupOutput.value = state.shapes.map(shapeToMarkup).filter(Boolean).join("\n");
+    updateEquationLegend();
+    highlightMarkupForShapes(state.selection, { scroll: false });
+    render();
+    setStatus("Equation values updated.");
+  }, 220);
+}
+
 function shapeToMarkup(shape) {
   if (shape.type === "line") {
     return `line id=${shape.id} visible=1 x1=${formatNumber(shape.x1)} y1=${formatNumber(shape.y1)} x2=${formatNumber(shape.x2)} y2=${formatNumber(shape.y2)} color=${shape.color}`;
@@ -257,6 +1014,10 @@ function shapeToMarkup(shape) {
 
   if (shape.type === "circle") {
     return `circle id=${shape.id} visible=1 cx=${formatNumber(shape.cx)} cy=${formatNumber(shape.cy)} r=${formatNumber(shape.r)} color=${shape.color}`;
+  }
+
+  if (shape.type === "parabola") {
+    return `parabola id=${shape.id} visible=1 vx=${formatNumber(shape.vx)} vy=${formatNumber(shape.vy)} fx=${formatNumber(shape.fx)} fy=${formatNumber(shape.fy)} color=${shape.color}`;
   }
 
   if (shape.type === "point") {
@@ -300,6 +1061,12 @@ function parseMarkupLine(raw) {
     const cx = parseFloat(kv.cx), cy = parseFloat(kv.cy), r = parseFloat(kv.r);
     if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(r) || r < 1) return null;
     return { type: 'circle', id, cx, cy, r, color };
+  }
+  if (type === 'parabola') {
+    const vx = parseFloat(kv.vx), vy = parseFloat(kv.vy), fx = parseFloat(kv.fx), fy = parseFloat(kv.fy);
+    if (!Number.isFinite(vx) || !Number.isFinite(vy) || !Number.isFinite(fx) || !Number.isFinite(fy)) return null;
+    if (Math.hypot(fx - vx, fy - vy) < 1) return null;
+    return { type: 'parabola', id, vx, vy, fx, fy, color };
   }
   if (type === 'point') {
     const x = parseFloat(kv.x), y = parseFloat(kv.y);
@@ -408,6 +1175,10 @@ function drawAxes() {
 }
 
 function drawShapes() {
+  if (state.showVertexLines) {
+    drawVertexLines();
+  }
+
   // selection glow pass — drawn first so it appears behind shapes
   if (state.selection.size > 0) {
     for (const shape of state.shapes) {
@@ -422,6 +1193,8 @@ function drawShapes() {
       } else if (shape.type === "circle") {
         ctx.lineWidth = 9;
         ctx.beginPath(); ctx.arc(shape.cx, shape.cy, shape.r, 0, Math.PI * 2); ctx.stroke();
+      } else if (shape.type === "parabola") {
+        drawParabolaShape(shape, { glow: true });
       } else if (shape.type === "point") {
         ctx.beginPath(); ctx.arc(shape.x, shape.y, 10, 0, Math.PI * 2); ctx.fill();
       } else if (shape.type === "label") {
@@ -447,6 +1220,8 @@ function drawShapes() {
       ctx.beginPath();
       ctx.arc(shape.cx, shape.cy, shape.r, 0, Math.PI * 2);
       ctx.stroke();
+    } else if (shape.type === "parabola") {
+      drawParabolaShape(shape);
     } else if (shape.type === "point") {
       ctx.fillStyle = shape.color;
       ctx.beginPath();
@@ -462,6 +1237,138 @@ function drawShapes() {
 
     ctx.restore();
   }
+}
+
+function getUniqueVertexPoints() {
+  const points = [];
+  for (const shape of state.shapes) {
+    if (shape.type !== "point") {
+      continue;
+    }
+
+    const point = { x: shape.x, y: shape.y };
+    if (!points.some((candidate) => pointMatches(candidate, point))) {
+      points.push(point);
+    }
+  }
+  return points;
+}
+
+function drawVertexLines() {
+  const points = getUniqueVertexPoints();
+  if (points.length < 2) {
+    return;
+  }
+
+  ctx.save();
+  ctx.strokeStyle = "rgba(154, 52, 18, 0.5)";
+  ctx.lineWidth = 1.4;
+  ctx.setLineDash([7, 6]);
+
+  for (let i = 0; i < points.length; i += 1) {
+    for (let j = i + 1; j < points.length; j += 1) {
+      ctx.beginPath();
+      ctx.moveTo(points[i].x, points[i].y);
+      ctx.lineTo(points[j].x, points[j].y);
+      ctx.stroke();
+    }
+  }
+
+  ctx.restore();
+}
+
+function parabolaBasis(shape) {
+  const dx = shape.fx - shape.vx;
+  const dy = shape.fy - shape.vy;
+  const p = Math.hypot(dx, dy);
+  if (p < 1e-6) {
+    return null;
+  }
+
+  const ux = dx / p;
+  const uy = dy / p;
+  return {
+    vx: shape.vx,
+    vy: shape.vy,
+    ux,
+    uy,
+    px: -uy,
+    py: ux,
+    p
+  };
+}
+
+function parabolaPointAt(shape, t) {
+  const basis = parabolaBasis(shape);
+  if (!basis) {
+    return null;
+  }
+
+  const x = (t * t) / (4 * basis.p);
+  return {
+    x: basis.vx + basis.ux * x + basis.px * t,
+    y: basis.vy + basis.uy * x + basis.py * t
+  };
+}
+
+function sampleParabolaPoints(shape, sampleCount = 140) {
+  const basis = parabolaBasis(shape);
+  if (!basis) {
+    return [];
+  }
+
+  const span = Math.max(state.logicalWidth, state.logicalHeight) * 1.1;
+  const step = (span * 2) / sampleCount;
+  const points = [];
+  for (let t = -span; t <= span; t += step) {
+    const point = parabolaPointAt(shape, t);
+    if (point) {
+      points.push(point);
+    }
+  }
+  return points;
+}
+
+function drawParabolaShape(shape, { glow = false, dashed = false } = {}) {
+  const points = sampleParabolaPoints(shape);
+  if (points.length < 2) {
+    return;
+  }
+
+  ctx.save();
+  ctx.strokeStyle = shape.color;
+  ctx.lineWidth = glow ? 8 : 3;
+  ctx.globalAlpha = glow ? 0.35 : 1;
+  ctx.setLineDash(dashed ? [6, 5] : []);
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+  for (let i = 1; i < points.length; i += 1) {
+    ctx.lineTo(points[i].x, points[i].y);
+  }
+  ctx.stroke();
+
+  if (!glow) {
+    ctx.setLineDash([]);
+    ctx.fillStyle = shape.color;
+    ctx.beginPath();
+    ctx.arc(shape.vx, shape.vy, 4, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(shape.fx, shape.fy, 4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+function pointNearParabola(point, shape, tolerance = 8) {
+  const points = sampleParabolaPoints(shape, 180);
+  for (let i = 0; i < points.length - 1; i += 1) {
+    if (distToSegment(point.x, point.y, points[i].x, points[i].y, points[i + 1].x, points[i + 1].y) <= tolerance) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function drawDraft(mousePoint) {
@@ -486,6 +1393,26 @@ function drawDraft(mousePoint) {
     ctx.beginPath();
     ctx.arc(state.draftPoint.x, state.draftPoint.y, radius, 0, Math.PI * 2);
     ctx.stroke();
+  } else if (state.mode === "parabola") {
+    if (state.parabolaStage === "focus" && state.parabolaVertexPoint) {
+      drawParabolaShape({
+        type: "parabola",
+        vx: state.parabolaVertexPoint.x,
+        vy: state.parabolaVertexPoint.y,
+        fx: mousePoint.x,
+        fy: mousePoint.y,
+        color: state.color
+      }, { dashed: true });
+    } else {
+      drawParabolaShape({
+        type: "parabola",
+        vx: mousePoint.x,
+        vy: mousePoint.y,
+        fx: state.draftPoint.x,
+        fy: state.draftPoint.y,
+        color: state.color
+      }, { dashed: true });
+    }
   }
 
   ctx.restore();
@@ -537,7 +1464,7 @@ function drawArcDiffs(anchor, rays) {
     // label at arc midpoint
     const lx = anchor.x + (arcR + 16) * Math.cos(midθ * DEG);
     const ly = anchor.y - (arcR + 16) * Math.sin(midθ * DEG);
-    const label = `${Number(diff.toFixed(state.anglePrecision)) % 360}°`;
+    const label = `${formatAngle(diff)}°`;
     ctx.font = "600 11px Inter, sans-serif";
     const tw = ctx.measureText(label).width;
     ctx.fillStyle = "rgba(88, 28, 180, 0.82)";
@@ -552,12 +1479,12 @@ function drawArcDiffs(anchor, rays) {
   ctx.restore();
 }
 
-function drawAngleAnalysisOverlay() {
-  if (!state.angleAnalysis) {
+function drawSingleAngleAnalysisOverlay(analysis, { interactive = false, showRayLabels = true, showArcDiffLabels = state.showArcDiffs } = {}) {
+  if (!analysis) {
     return;
   }
 
-  const { anchor, rays } = state.angleAnalysis;
+  const { anchor, rays } = analysis;
 
   ctx.save();
   ctx.strokeStyle = "#22d3ee";
@@ -573,13 +1500,17 @@ function drawAngleAnalysisOverlay() {
 
     const tx = anchor.x + (ray.to.x - anchor.x) * 0.35;
     const ty = anchor.y + (ray.to.y - anchor.y) * 0.35;
-    // store for click-to-edit hit-testing
-    ray.labelX = tx + 4;
-    ray.labelY = ty - 4;
-    ctx.setLineDash([]);
-    ctx.font = "600 12px Inter, sans-serif";
-    ctx.fillText(`${formatNumber(ray.angle)} deg`, tx + 4, ty - 4);
-    ctx.setLineDash([6, 4]);
+    if (showRayLabels) {
+      if (interactive) {
+        // store for click-to-edit hit-testing
+        ray.labelX = tx + 4;
+        ray.labelY = ty - 4;
+      }
+      ctx.setLineDash([]);
+      ctx.font = "600 12px Inter, sans-serif";
+      ctx.fillText(`${formatAngle(ray.angle)} deg`, tx + 4, ty - 4);
+      ctx.setLineDash([6, 4]);
+    }
   }
 
   ctx.setLineDash([]);
@@ -589,8 +1520,31 @@ function drawAngleAnalysisOverlay() {
   ctx.beginPath();
   ctx.arc(anchor.x, anchor.y, 3, 0, Math.PI * 2);
   ctx.fill();
-  if (state.showArcDiffs) drawArcDiffs(anchor, rays);
+  if (showArcDiffLabels) drawArcDiffs(anchor, rays);
   ctx.restore();
+}
+
+function drawAllVertexAngleOverlays() {
+  if (!state.showAllVertexAngles) {
+    return;
+  }
+
+  const points = getUniqueVertexPoints();
+  for (const anchor of points) {
+    const rays = collectRaysFromPoint(anchor, { includeVertexLines: state.showVertexLines });
+    if (rays.length === 0) {
+      continue;
+    }
+
+    drawSingleAngleAnalysisOverlay(
+      { anchor, rays },
+      { showRayLabels: false, showArcDiffLabels: true }
+    );
+  }
+}
+
+function drawAngleAnalysisOverlay() {
+  drawSingleAngleAnalysisOverlay(state.angleAnalysis, { interactive: true });
 }
 
 function drawCoordHover(canvasPoint) {
@@ -615,11 +1569,96 @@ function drawCoordHover(canvasPoint) {
   ctx.restore();
 }
 
+function drawReferenceImage() {
+  const reference = state.referenceImage;
+  if (!reference || !reference.image) {
+    return;
+  }
+
+  const source = reference.image;
+  if (!source.width || !source.height) {
+    return;
+  }
+
+  const widthScale = state.logicalWidth / source.width;
+  const heightScale = state.logicalHeight / source.height;
+  const scale = Math.min(widthScale, heightScale);
+  const drawWidth = Math.max(1, Math.round(source.width * scale));
+  const drawHeight = Math.max(1, Math.round(source.height * scale));
+  const offsetX = Math.round((state.logicalWidth - drawWidth) / 2);
+  const offsetY = Math.round((state.logicalHeight - drawHeight) / 2);
+
+  ctx.save();
+  ctx.globalAlpha = 0.5;
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(source, offsetX, offsetY, drawWidth, drawHeight);
+  ctx.restore();
+}
+
+function drawImageDebugOverlay() {
+  const overlay = state.imageDebugOverlay;
+  if (!state.showImageDebugOverlay || !overlay) {
+    return;
+  }
+
+  ctx.save();
+  ctx.setLineDash([6, 4]);
+  ctx.lineWidth = 1.6;
+
+  for (const line of overlay.lines || []) {
+    ctx.strokeStyle = "rgba(59, 130, 246, 0.9)";
+    ctx.beginPath();
+    ctx.moveTo(line.x1, line.y1);
+    ctx.lineTo(line.x2, line.y2);
+    ctx.stroke();
+  }
+
+  ctx.setLineDash([4, 3]);
+  for (const circle of overlay.circles || []) {
+    ctx.strokeStyle = "rgba(245, 158, 11, 0.95)";
+    ctx.beginPath();
+    ctx.arc(circle.cx, circle.cy, Math.max(2, circle.r), 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.fillStyle = "rgba(245, 158, 11, 0.95)";
+    ctx.font = "600 10px Inter, sans-serif";
+    ctx.fillText(`r=${formatMathNumber(circle.r / state.gridUnit)}`, circle.cx + 8, circle.cy - 8);
+  }
+
+  ctx.setLineDash([]);
+  for (const point of overlay.points || []) {
+    ctx.fillStyle = "rgba(239, 68, 68, 0.9)";
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, 2.8, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  for (const parabola of overlay.parabolas || []) {
+    ctx.strokeStyle = "rgba(16, 185, 129, 0.92)";
+    ctx.beginPath();
+    ctx.moveTo(parabola.vx, parabola.vy);
+    ctx.lineTo(parabola.fx, parabola.fy);
+    ctx.stroke();
+  }
+
+  ctx.fillStyle = "rgba(30, 41, 59, 0.82)";
+  ctx.fillRect(12, 12, 245, 42);
+  ctx.fillStyle = "#e2e8f0";
+  ctx.font = "600 10px Inter, sans-serif";
+  const txt = overlay.info || "debug overlay";
+  ctx.fillText(`Detector: ${txt}`, 18, 30);
+  ctx.fillText("Blue=line  Amber=circle  Red=point", 18, 44);
+  ctx.restore();
+}
+
 function render(mousePoint = null) {
   clearCanvas();
+  drawReferenceImage();
   if (state.showGrid) drawGridLines();
   drawAxes();
+  drawImageDebugOverlay();
   drawShapes();
+  drawAllVertexAngleOverlays();
   drawAngleAnalysisOverlay();
   drawSnapIndicator();
   if (mousePoint && state.isDragging) {
@@ -637,7 +1676,7 @@ function angleFromXAxisDegrees(from, to) {
   if (angle < 0) {
     angle += 360;
   }
-  return Number(angle.toFixed(state.anglePrecision)) % 360;
+  return angle % 360;
 }
 
 function findNearestExistingPoint(point, radius) {
@@ -660,7 +1699,7 @@ function findNearestExistingPoint(point, radius) {
   return nearest;
 }
 
-function collectRaysFromPoint(anchor) {
+function collectRaysFromPoint(anchor, { includeVertexLines = false } = {}) {
   const rays = [];
 
   for (const shape of state.shapes) {
@@ -687,11 +1726,25 @@ function collectRaysFromPoint(anchor) {
     }
   }
 
+  if (includeVertexLines) {
+    for (const point of getUniqueVertexPoints()) {
+      if (!pointMatches(anchor, point)) {
+        rays.push({ to: point });
+      }
+    }
+  }
+
   const normalized = [];
   for (const ray of rays) {
     const angle = angleFromXAxisDegrees(anchor, ray.to);
-    if (!normalized.some((r) => Math.abs(r.angle - angle) < 1e-6)) {
+    const existing = normalized.find((r) => Math.abs(r.angle - angle) < 1e-6);
+    if (!existing) {
       normalized.push({ to: ray.to, angle });
+      continue;
+    }
+
+    if (distance(anchor, ray.to) < distance(anchor, existing.to)) {
+      existing.to = ray.to;
     }
   }
 
@@ -717,70 +1770,104 @@ function analyzePointAnglesAt(rawPoint) {
     return;
   }
 
-  const values = rays.map((ray) => `${formatNumber(ray.angle)} deg`).join(", ");
+  const values = rays.map((ray) => `${formatAngle(ray.angle)} deg`).join(", ");
   setStatus(`Angles to +X at point (${anchor.x}, ${anchor.y}): ${values}`);
 }
 
-function deleteAtPoint(rawPoint) {
-  const target = findNearestExistingPoint(rawPoint, 14);
+function toggleAlternateAngleView(rawPoint = null) {
+  if (rawPoint) {
+    const anchor = findNearestExistingPoint(rawPoint, 14);
+    if (!anchor) {
+      setStatus("Angle mode: double-click closer to an existing point.", true);
+      return;
+    }
 
-  // check if click is on a circle perimeter or label when no point is near
-  if (!target) {
-    const HIT = 10;
-    const hitCircle = state.shapes.find((s) => {
-      if (s.type !== "circle") return false;
-      const d = Math.sqrt((rawPoint.x - s.cx) ** 2 + (rawPoint.y - s.cy) ** 2);
-      return Math.abs(d - s.r) <= HIT;
-    });
-    if (hitCircle) {
-      pushUndoSnapshot();
-      state.shapes = state.shapes.filter((s) => {
-        if (s === hitCircle) return false;
-        // remove the centre point that belongs to this circle
-        if (s.type === "point" && pointMatches({ x: s.x, y: s.y }, { x: hitCircle.cx, y: hitCircle.cy })) return false;
-        return true;
-      });
-      rebuildMarkup();
-      markupOutput.value = state.shapes.map(shapeToMarkup).filter(Boolean).join("\n");
-      render();
-      setStatus(`Deleted circle id=${hitCircle.id}.`);
-      return;
+    if (!state.angleAnalysis || !pointMatches(state.angleAnalysis.anchor, anchor)) {
+      analyzePointAnglesAt(rawPoint);
     }
-    const hitLabel = state.shapes.find((s) => {
-      if (s.type !== "label") return false;
-      return Math.sqrt((rawPoint.x - s.x) ** 2 + (rawPoint.y - s.y) ** 2) <= 20;
-    });
-    if (hitLabel) {
-      pushUndoSnapshot();
-      state.shapes = state.shapes.filter((s) => s !== hitLabel);
-      rebuildMarkup();
-      markupOutput.value = state.shapes.map(shapeToMarkup).filter(Boolean).join("\n");
-      render();
-      setStatus(`Deleted label "${hitLabel.text}".`);
-      return;
-    }
-    setStatus("Delete mode: click closer to a point, circle, or label.", true);
+  }
+
+  if (!state.angleAnalysis) {
+    setStatus("Angle mode: click a point first, then use 0 or double-click for alternate angles.", true);
+    return;
+  }
+
+  state.showArcDiffs = !state.showArcDiffs;
+  render();
+  setStatus(`Alternate angle view ${state.showArcDiffs ? "on" : "off"} (0 / double-click point).`);
+}
+
+function deleteSelectionWithConfirm() {
+  if (state.mode !== "select") {
+    setMode("select");
+    setStatus("Select shapes first, then click Delete to confirm removal.");
+    return;
+  }
+
+  if (state.selection.size === 0) {
+    setStatus("Select one or more shapes before deleting.", true);
+    return;
+  }
+
+  const shapes = Array.from(state.selection);
+  const message = shapes.length === 1
+    ? `Delete selected ${shapes[0].type} id=${shapes[0].id}?`
+    : `Delete ${shapes.length} selected shapes?`;
+
+  if (!window.confirm(message)) {
+    setStatus("Delete canceled.");
     return;
   }
 
   pushUndoSnapshot();
-  const before = state.shapes.length;
-  state.shapes = state.shapes.filter((shape) => {
-    if (shape.type === "point" && pointMatches({ x: shape.x, y: shape.y }, target)) return false;
-    if (shape.type === "line") {
-      const a = pointMatches({ x: shape.x1, y: shape.y1 }, target);
-      const b = pointMatches({ x: shape.x2, y: shape.y2 }, target);
-      if (a || b) return false;
-    }
-    // remove circle if target is its centre
-    if (shape.type === "circle" && pointMatches({ x: shape.cx, y: shape.cy }, target)) return false;
-    return true;
-  });
-  const removed = before - state.shapes.length;
+  state.shapes = state.shapes.filter((shape) => !state.selection.has(shape));
+  state.selection.clear();
+  updateEquationLegend();
+  updateMarkupHighlight([]);
   rebuildMarkup();
-  markupOutput.value = state.shapes.map(shapeToMarkup).filter(Boolean).join("\n");
   render();
-  setStatus(`Deleted point at (${target.x}, ${target.y}) and ${removed - 1} connected shape(s).`);
+  setStatus(shapes.length === 1 ? `Deleted selected ${shapes[0].type} id=${shapes[0].id}.` : `Deleted ${shapes.length} selected shapes.`);
+}
+
+function moveShapeBy(shape, dx, dy) {
+  if (shape.type === "line") {
+    shape.x1 += dx;
+    shape.y1 += dy;
+    shape.x2 += dx;
+    shape.y2 += dy;
+    return;
+  }
+
+  if (shape.type === "circle") {
+    shape.cx += dx;
+    shape.cy += dy;
+    return;
+  }
+
+  if (shape.type === "parabola") {
+    shape.vx += dx;
+    shape.vy += dy;
+    shape.fx += dx;
+    shape.fy += dy;
+    return;
+  }
+
+  if (shape.type === "point" || shape.type === "label") {
+    shape.x += dx;
+    shape.y += dy;
+  }
+}
+
+function moveSelectionBy(dx, dy) {
+  if (!dx && !dy) {
+    return false;
+  }
+
+  for (const shape of state.selection) {
+    moveShapeBy(shape, dx, dy);
+  }
+
+  return true;
 }
 
 function toCanvasPoint(event) {
@@ -796,6 +1883,16 @@ function toCanvasPoint(event) {
 
 // snaps a canvas-pixel point to the nearest grid intersection
 function applyGridSnap(point) {
+  if (!state.snapToGrid || !state.showGrid) return point;
+  const ox = Math.round(state.logicalWidth / 2);
+  const oy = Math.round(state.logicalHeight / 2);
+  return {
+    x: ox + Math.round((point.x - ox) / state.gridUnit) * state.gridUnit,
+    y: oy + Math.round((point.y - oy) / state.gridUnit) * state.gridUnit
+  };
+}
+
+function applyVisibleGridSnap(point) {
   if (!state.snapToGrid || !state.showGrid) return point;
   const ox = Math.round(state.logicalWidth / 2);
   const oy = Math.round(state.logicalHeight / 2);
@@ -831,6 +1928,8 @@ function findShapeAtPoint(p) {
     if (s.type === "line" && distToSegment(p.x, p.y, s.x1, s.y1, s.x2, s.y2) <= HIT_LINE) return s;
   for (const s of state.shapes)
     if (s.type === "circle" && Math.abs(Math.hypot(p.x - s.cx, p.y - s.cy) - s.r) <= HIT_LINE) return s;
+  for (const s of state.shapes)
+    if (s.type === "parabola" && pointNearParabola(p, s, HIT_LINE + 1)) return s;
   return null;
 }
 
@@ -912,6 +2011,8 @@ function applySelectClick(hit) {
     _selClickCount = 0;
     _selHitShape = null;
     state.selection.clear();
+    state.equationEditMode = false;
+    updateEquationLegend();
     updateMarkupHighlight([]);
     render();
     return;
@@ -952,6 +2053,8 @@ function applySelectClick(hit) {
   }
 
   state.selection = selected;
+  state.equationEditMode = false;
+  updateEquationLegend();
   highlightMarkupForShapes(selected);
   render();
 }
@@ -990,8 +2093,8 @@ function commitAngleEdit() {
   const dist = Math.sqrt(dx * dx + dy * dy);
   const rad = (newAngle * Math.PI) / 180;
   const newTo = {
-    x: Math.round(anchor.x + dist * Math.cos(rad)),
-    y: Math.round(anchor.y + dist * Math.sin(rad))
+    x: anchor.x + dist * Math.cos(rad),
+    y: anchor.y - dist * Math.sin(rad)
   };
   pushUndoSnapshot();
 
@@ -1063,6 +2166,12 @@ function nearlyEqual(a, b, epsilon = 1e-6) {
 
 function pointMatches(a, b, epsilon = 1e-6) {
   return nearlyEqual(a.x, b.x, epsilon) && nearlyEqual(a.y, b.y, epsilon);
+}
+
+const VERTEX_MERGE_EPSILON = 1;
+
+function vertexPointMatches(a, b) {
+  return pointMatches(a, b, VERTEX_MERGE_EPSILON);
 }
 
 function pointOnSegment(point, a, b, epsilon = 1e-6) {
@@ -1137,18 +2246,52 @@ function oppositePointOnCircle(point, circle) {
   };
 }
 
+function snapParabolaAxisPoint(vertex, point) {
+  if (!vertex || !point) {
+    return point;
+  }
+
+  const dx = point.x - vertex.x;
+  const dy = point.y - vertex.y;
+
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    return { x: point.x, y: vertex.y };
+  }
+
+  return { x: vertex.x, y: point.y };
+}
+
+function pointAtDistanceFrom(center, point, distanceValue) {
+  if (!center || !point) {
+    return point;
+  }
+
+  const dx = point.x - center.x;
+  const dy = point.y - center.y;
+  const currentDistance = Math.hypot(dx, dy);
+  if (currentDistance < 1e-6 || !Number.isFinite(distanceValue)) {
+    return { x: center.x + distanceValue, y: center.y };
+  }
+
+  const scale = distanceValue / currentDistance;
+  return {
+    x: center.x + dx * scale,
+    y: center.y + dy * scale
+  };
+}
+
 function findNearestSnapTarget(point, radius) {
+  const nearestPoint = findNearestPointSnapTarget(point, radius);
+  if (nearestPoint) {
+    return nearestPoint;
+  }
+
   let nearest = null;
   let best = radius;
 
   for (const shape of state.shapes) {
-    if (shape.type === "point" && (state.snapKindFilter === "any" || state.snapKindFilter === "point")) {
-      const candidate = { x: shape.x, y: shape.y, kind: "point" };
-      const d = distance(point, candidate);
-      if (d <= best) {
-        best = d;
-        nearest = candidate;
-      }
+    if (shape.type === "point") {
+      continue;
     }
 
     if (shape.type === "line" && (state.snapKindFilter === "any" || state.snapKindFilter === "line")) {
@@ -1182,7 +2325,36 @@ function findNearestSnapTarget(point, radius) {
   return nearest;
 }
 
+function findNearestPointSnapTarget(point, radius) {
+  let nearest = null;
+  let best = radius;
+
+  for (const shape of state.shapes) {
+    if (shape.type !== "point") {
+      continue;
+    }
+
+    if (state.snapKindFilter !== "any" && state.snapKindFilter !== "point") {
+      continue;
+    }
+
+    const candidate = { x: shape.x, y: shape.y, kind: "point" };
+    const d = distance(point, candidate);
+    if (d <= best) {
+      best = d;
+      nearest = candidate;
+    }
+  }
+
+  return nearest;
+}
+
 function findNearestCircleSnapTarget(point, radius) {
+  const nearestPoint = findNearestPointSnapTarget(point, radius);
+  if (nearestPoint) {
+    return nearestPoint;
+  }
+
   let nearest = null;
   let best = radius;
 
@@ -1613,7 +2785,296 @@ function splitExistingLines(hitsByLineIndex) {
 }
 
 function hasPointShape(point) {
-  return state.shapes.some((shape) => shape.type === "point" && pointMatches(point, { x: shape.x, y: shape.y }));
+  return state.shapes.some((shape) => shape.type === "point" && vertexPointMatches(point, { x: shape.x, y: shape.y }));
+}
+
+function nextOwnedPointId(ownerId, pool = state.shapes) {
+  const baseId = shapeBaseId(ownerId);
+  let suffix = 1;
+
+  while (pool.some((shape) => String(shape.id) === `${baseId}.p${suffix}`)) {
+    suffix += 1;
+  }
+
+  return `${baseId}.p${suffix}`;
+}
+
+function pushUniquePoint(list, point, ownerId, color) {
+  if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+    return;
+  }
+
+  if (list.some((entry) => vertexPointMatches(entry, point))) {
+    return;
+  }
+
+  list.push({
+    type: "point",
+    id: nextOwnedPointId(ownerId, [...state.shapes, ...list]),
+    x: point.x,
+    y: point.y,
+    color
+  });
+}
+
+function collectMissingUniquePoints(points) {
+  const unique = [];
+
+  for (const point of points) {
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+      continue;
+    }
+
+    if (hasPointShape(point) || unique.some((entry) => vertexPointMatches(entry, point))) {
+      continue;
+    }
+
+    unique.push(point);
+  }
+
+  return unique;
+}
+
+function removeDuplicatePointShapes() {
+  const uniquePoints = [];
+  const nextShapes = [];
+  let removedCount = 0;
+
+  for (const shape of state.shapes) {
+    if (shape.type !== "point") {
+      nextShapes.push(shape);
+      continue;
+    }
+
+    if (uniquePoints.some((point) => vertexPointMatches(point, shape))) {
+      removedCount += 1;
+      continue;
+    }
+
+    uniquePoints.push(shape);
+    nextShapes.push(shape);
+  }
+
+  state.shapes = nextShapes;
+  return removedCount;
+}
+
+function lineDirectionFromPoint(line, point) {
+  const startMatches = vertexPointMatches(point, { x: line.x1, y: line.y1 });
+  const endMatches = vertexPointMatches(point, { x: line.x2, y: line.y2 });
+  if (!startMatches && !endMatches) {
+    return null;
+  }
+
+  const other = startMatches
+    ? { x: line.x2, y: line.y2 }
+    : { x: line.x1, y: line.y1 };
+  const dx = other.x - point.x;
+  const dy = other.y - point.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 1e-6) {
+    return null;
+  }
+
+  return {
+    x: dx / length,
+    y: dy / length
+  };
+}
+
+function isMeaningfulLineVertex(point, lines) {
+  const directions = lines
+    .map((line) => lineDirectionFromPoint(line, point))
+    .filter(Boolean);
+
+  if (directions.length <= 1) {
+    return true;
+  }
+
+  if (directions.length > 2) {
+    return true;
+  }
+
+  const [first, second] = directions;
+  const crossValue = Math.abs(cross(first.x, first.y, second.x, second.y));
+  const dotValue = first.x * second.x + first.y * second.y;
+
+  return !(crossValue <= 0.01 && dotValue < -0.999);
+}
+
+function pointOnCirclePerimeter(point, circle, epsilon = VERTEX_MERGE_EPSILON) {
+  return nearlyEqual(Math.hypot(point.x - circle.cx, point.y - circle.cy) - circle.r, 0, epsilon);
+}
+
+function isMeaningfulRebuiltPoint(point, lines, circles, parabolas) {
+  if (circles.some((circle) => vertexPointMatches(point, { x: circle.cx, y: circle.cy }))) {
+    return true;
+  }
+
+  if (parabolas.some((parabola) =>
+    vertexPointMatches(point, { x: parabola.vx, y: parabola.vy }) ||
+    vertexPointMatches(point, { x: parabola.fx, y: parabola.fy })
+  )) {
+    return true;
+  }
+
+  const incidentLines = lines.filter((line) =>
+    vertexPointMatches(point, { x: line.x1, y: line.y1 }) ||
+    vertexPointMatches(point, { x: line.x2, y: line.y2 })
+  );
+
+  if (incidentLines.length <= 1) {
+    return true;
+  }
+
+  if (incidentLines.length > 2) {
+    return true;
+  }
+
+  if (circles.some((circle) => pointOnCirclePerimeter(point, circle))) {
+    return true;
+  }
+
+  return isMeaningfulLineVertex(point, incidentLines);
+}
+
+function appendPointShapeIfMissing(point, ownerId, color) {
+  if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) {
+    return false;
+  }
+
+  if (hasPointShape(point)) {
+    return false;
+  }
+
+  state.shapes.push({
+    type: "point",
+    id: nextOwnedPointId(ownerId),
+    x: point.x,
+    y: point.y,
+    color
+  });
+  return true;
+}
+
+function rebuildVertices() {
+  const geometryShapes = state.shapes.filter((shape) => shape.type !== "point");
+  if (geometryShapes.length === 0) {
+    state.shapes = [];
+    state.selection.clear();
+    updateEquationLegend();
+    updateMarkupHighlight([]);
+    rebuildMarkup();
+    render();
+    setStatus("No geometry available. Cleared all vertices.");
+    return;
+  }
+
+  pushUndoSnapshot();
+
+  const nextPoints = [];
+
+  const lines = geometryShapes.filter((shape) => shape.type === "line");
+  const circles = geometryShapes.filter((shape) => shape.type === "circle");
+  const parabolas = geometryShapes.filter((shape) => shape.type === "parabola");
+
+  const lineVertices = [];
+  for (const line of lines) {
+    for (const point of [{ x: line.x1, y: line.y1 }, { x: line.x2, y: line.y2 }]) {
+      let entry = lineVertices.find((candidate) => vertexPointMatches(candidate.point, point));
+      if (!entry) {
+        entry = { point, lines: [] };
+        lineVertices.push(entry);
+      }
+      entry.lines.push(line);
+    }
+  }
+
+  for (const entry of lineVertices) {
+    if (!isMeaningfulLineVertex(entry.point, entry.lines)) {
+      continue;
+    }
+
+    const ownerLine = entry.lines[0];
+    const ownerId = shapeBaseId(ownerLine.id);
+    pushUniquePoint(nextPoints, entry.point, ownerId, ownerLine.color);
+  }
+
+  for (const circle of circles) {
+    const ownerId = shapeBaseId(circle.id);
+    pushUniquePoint(nextPoints, { x: circle.cx, y: circle.cy }, ownerId, circle.color);
+  }
+
+  for (const parabola of parabolas) {
+    const ownerId = shapeBaseId(parabola.id);
+    pushUniquePoint(nextPoints, { x: parabola.vx, y: parabola.vy }, ownerId, parabola.color);
+    pushUniquePoint(nextPoints, { x: parabola.fx, y: parabola.fy }, ownerId, parabola.color);
+  }
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const a1 = { x: lines[i].x1, y: lines[i].y1 };
+    const a2 = { x: lines[i].x2, y: lines[i].y2 };
+    const lineBaseId = shapeBaseId(lines[i].id);
+
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const hit = segmentIntersectionPoint(a1, a2, { x: lines[j].x1, y: lines[j].y1 }, { x: lines[j].x2, y: lines[j].y2 });
+      if (!hit) {
+        continue;
+      }
+
+      pushUniquePoint(nextPoints, hit, lineBaseId, lines[i].color);
+      pushUniquePoint(nextPoints, hit, shapeBaseId(lines[j].id), lines[j].color);
+    }
+
+    for (const circle of circles) {
+      const hits = segmentCircleIntersections(a1, a2, { cx: circle.cx, cy: circle.cy, r: circle.r });
+      for (const hit of hits) {
+        pushUniquePoint(nextPoints, hit, lineBaseId, lines[i].color);
+        pushUniquePoint(nextPoints, hit, shapeBaseId(circle.id), circle.color);
+      }
+    }
+  }
+
+  for (let i = 0; i < circles.length; i += 1) {
+    for (let j = i + 1; j < circles.length; j += 1) {
+      const hits = circleCircleIntersections(
+        { cx: circles[i].cx, cy: circles[i].cy, r: circles[i].r },
+        { cx: circles[j].cx, cy: circles[j].cy, r: circles[j].r }
+      );
+      for (const hit of hits) {
+        pushUniquePoint(nextPoints, hit, shapeBaseId(circles[i].id), circles[i].color);
+        pushUniquePoint(nextPoints, hit, shapeBaseId(circles[j].id), circles[j].color);
+      }
+    }
+  }
+
+  const filteredPoints = nextPoints.filter((point) => isMeaningfulRebuiltPoint(point, lines, circles, parabolas));
+
+  state.shapes = [...geometryShapes, ...filteredPoints];
+  removeDuplicatePointShapes();
+  state.selection = new Set(Array.from(state.selection).filter((shape) => shape.type !== "point" && state.shapes.includes(shape)));
+  updateEquationLegend();
+  highlightMarkupForShapes(state.selection, { scroll: false });
+  rebuildMarkup();
+  render();
+  setStatus(`Rebuilt ${filteredPoints.length} vertex point${filteredPoints.length === 1 ? "" : "s"} from current geometry.`);
+}
+
+function removeVertices() {
+  const pointCount = state.shapes.filter((shape) => shape.type === "point").length;
+  if (pointCount === 0) {
+    setStatus("No vertices to remove.");
+    return;
+  }
+
+  pushUndoSnapshot();
+  state.shapes = state.shapes.filter((shape) => shape.type !== "point");
+  state.selection = new Set(Array.from(state.selection).filter((shape) => shape.type !== "point" && state.shapes.includes(shape)));
+  updateEquationLegend();
+  highlightMarkupForShapes(state.selection, { scroll: false });
+  rebuildMarkup();
+  render();
+  setStatus(`Removed ${pointCount} vert${pointCount === 1 ? "ex" : "ices"}.`);
 }
 
 // shared core used by addLine and AI batch processing (no undo push, no render)
@@ -1623,16 +3084,16 @@ function addLineCore(start, end, color, forcedSplits = []) {
   const intersectionPoints = [...intersectionInfo.points, ...forcedSplits];
   splitExistingLines(intersectionInfo.hitsByLineIndex);
   const segments = buildRaySegments(start, end, intersectionPoints);
-  const addedIntersectionPoints = intersectionPoints.filter((p) => !hasPointShape(p));
+  const addedIntersectionPoints = collectMissingUniquePoints(intersectionPoints);
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
     const segId = segments.length > 1 ? `${id}.${i + 1}` : id;
     state.shapes.push({ type: "line", id: segId, x1: seg.x1, y1: seg.y1, x2: seg.x2, y2: seg.y2, color });
   }
-  state.shapes.push({ type: "point", id, x: start.x, y: start.y, color });
-  state.shapes.push({ type: "point", id, x: end.x, y: end.y, color });
+  appendPointShapeIfMissing(start, id, color);
+  appendPointShapeIfMissing(end, id, color);
   for (const p of addedIntersectionPoints) {
-    state.shapes.push({ type: "point", id, x: p.x, y: p.y, color });
+    appendPointShapeIfMissing(p, id, color);
   }
 }
 
@@ -1662,12 +3123,12 @@ function addCircleCore(cx, cy, r, color) {
   if (r < 1) return;
   const intersectionInfo = collectCircleIntersections({ cx, cy, r });
   splitExistingLines(intersectionInfo.hitsByLineIndex);
-  const addedIntersectionPoints = intersectionInfo.points.filter((p) => !hasPointShape(p));
+  const addedIntersectionPoints = collectMissingUniquePoints(intersectionInfo.points);
   const id = getNextId();
   state.shapes.push({ type: "circle", id, cx, cy, r, color });
-  state.shapes.push({ type: "point", id, x: cx, y: cy, color });
+  appendPointShapeIfMissing({ x: cx, y: cy }, id, color);
   for (const p of addedIntersectionPoints) {
-    state.shapes.push({ type: "point", id, x: p.x, y: p.y, color });
+    appendPointShapeIfMissing(p, id, color);
   }
 }
 
@@ -1679,7 +3140,7 @@ function addLine(start, end, forcedSplits = []) {
   const intersectionPoints = [...intersectionInfo.points, ...forcedSplits];
   splitExistingLines(intersectionInfo.hitsByLineIndex);
   const segments = buildRaySegments(start, end, intersectionPoints);
-  const addedIntersectionPoints = intersectionPoints.filter((p) => !hasPointShape(p));
+  const addedIntersectionPoints = collectMissingUniquePoints(intersectionPoints);
 
   for (let i = 0; i < segments.length; i += 1) {
     const seg = segments[i];
@@ -1695,31 +3156,14 @@ function addLine(start, end, forcedSplits = []) {
       color: state.color
     });
   }
-  state.shapes.push({
-    type: "point",
-    id,
-    x: start.x,
-    y: start.y,
-    color: state.color
-  });
-  state.shapes.push({
-    type: "point",
-    id,
-    x: end.x,
-    y: end.y,
-    color: state.color
-  });
+  appendPointShapeIfMissing(start, id, state.color);
+  appendPointShapeIfMissing(end, id, state.color);
   for (const p of intersectionPoints) {
     if (addedIntersectionPoints.some((q) => pointMatches(q, p))) {
-      state.shapes.push({
-        type: "point",
-        id,
-        x: p.x,
-        y: p.y,
-        color: state.color
-      });
+      appendPointShapeIfMissing(p, id, state.color);
     }
   }
+  removeDuplicatePointShapes();
   rebuildMarkup();
   render();
   if (addedIntersectionPoints.length > 0) {
@@ -1752,7 +3196,7 @@ function addCircle(center, edge) {
     r
   });
   splitExistingLines(intersectionInfo.hitsByLineIndex);
-  const addedIntersectionPoints = intersectionInfo.points.filter((p) => !hasPointShape(p));
+  const addedIntersectionPoints = collectMissingUniquePoints(intersectionInfo.points);
 
   const id = getNextId();
   state.shapes.push({
@@ -1763,22 +3207,11 @@ function addCircle(center, edge) {
     r,
     color: state.color
   });
-  state.shapes.push({
-      type: "point",
-      id,
-    x: center.x,
-    y: center.y,
-    color: state.color
-  });
+  appendPointShapeIfMissing(center, id, state.color);
   for (const p of addedIntersectionPoints) {
-    state.shapes.push({
-      type: "point",
-      id,
-      x: p.x,
-      y: p.y,
-      color: state.color
-    });
+    appendPointShapeIfMissing(p, id, state.color);
   }
+  removeDuplicatePointShapes();
   rebuildMarkup();
   render();
 
@@ -1793,6 +3226,31 @@ function addCircle(center, edge) {
   }
 
   setStatus(`Added circle id=${id} with center point.`);
+}
+
+function addParabola(vertex, focus) {
+  if (Math.hypot(focus.x - vertex.x, focus.y - vertex.y) < 1) {
+    setStatus("Parabola needs a distinct focus point.", true);
+    return;
+  }
+
+  pushUndoSnapshot();
+  const id = getNextId();
+  state.shapes.push({
+    type: "parabola",
+    id,
+    vx: vertex.x,
+    vy: vertex.y,
+    fx: focus.x,
+    fy: focus.y,
+    color: state.color
+  });
+  appendPointShapeIfMissing(vertex, id, state.color);
+  appendPointShapeIfMissing(focus, id, state.color);
+  removeDuplicatePointShapes();
+  rebuildMarkup();
+  render();
+  setStatus(`Added parabola id=${id}.`);
 }
 
 function addLabel(point) {
@@ -1817,10 +3275,54 @@ function addLabel(point) {
   setStatus(`Added label id=${id}.`);
 }
 
+function addPoint(point) {
+  if (hasPointShape(point)) {
+    setStatus(`Point already exists at (${formatNumber(point.x)}, ${formatNumber(point.y)}).`, true);
+    return;
+  }
+
+  pushUndoSnapshot();
+  const id = getNextId();
+  state.shapes.push({
+    type: "point",
+    id,
+    x: point.x,
+    y: point.y,
+    color: state.color
+  });
+  removeDuplicatePointShapes();
+  rebuildMarkup();
+  render();
+  setStatus(`Added point id=${id} at (${formatNumber(point.x)}, ${formatNumber(point.y)}).`);
+}
+
 canvas.addEventListener("mousemove", (event) => {
   const point = toDrawPoint(event);
 
   if (state.isDragging) {
+    if (state.mode === "move" && state.moveDragPoint) {
+      const currentPoint = toCanvasPoint(event);
+      const dx = currentPoint.x - state.moveDragPoint.x;
+      const dy = currentPoint.y - state.moveDragPoint.y;
+
+      if (dx || dy) {
+        if (!state.moveDidChange) {
+          pushUndoSnapshot();
+          state.moveDidChange = true;
+        }
+
+        moveSelectionBy(dx, dy);
+        state.moveDragPoint = currentPoint;
+        state.lastPointerPoint = currentPoint;
+        rebuildMarkup();
+        updateEquationLegend();
+        highlightMarkupForShapes(state.selection, { scroll: false });
+      }
+
+      render(currentPoint);
+      return;
+    }
+
     let currentPoint = point;
     if (state.mode === "line" && state.lineDrawMode === "diameter") {
       if (state.pendingDiameterCircle && state.draftPoint) {
@@ -1833,6 +3335,14 @@ canvas.addEventListener("mousemove", (event) => {
         state.hoverPoint = null;
         setSnapInfo(snapInfoText("target: none"));
       }
+    } else if (state.mode === "parabola" && state.parabolaStage === "vertex" && !event.shiftKey) {
+      currentPoint = applyVisibleGridSnap(point);
+      state.hoverPoint = null;
+      setSnapInfo(snapInfoText("vertex / grid"));
+    } else if (state.mode === "parabola" && state.parabolaStage === "focus" && !event.shiftKey) {
+      currentPoint = applyVisibleGridSnap(point);
+      state.hoverPoint = null;
+      setSnapInfo(snapInfoText(state.snapToGrid && state.showGrid ? "C point / grid" : "C point"));
     } else if (state.mode === "line" && !event.shiftKey) {
       const nearest = findNearestSnapTarget(point, state.snapRadius);
       if (nearest) {
@@ -1846,6 +3356,8 @@ canvas.addEventListener("mousemove", (event) => {
     } else {
       state.hoverPoint = null;
       if (state.mode === "line" && event.shiftKey) {
+        setSnapInfo(snapInfoText("off (Shift)"));
+      } else if (state.mode === "parabola" && event.shiftKey) {
         setSnapInfo(snapInfoText("off (Shift)"));
       }
     }
@@ -1882,6 +3394,8 @@ canvas.addEventListener("mousemove", (event) => {
     state.hoverPoint = null;
     if (state.mode === "line" && event.shiftKey) {
       setSnapInfo(snapInfoText("off (Shift)"));
+    } else if (state.mode === "parabola") {
+      setSnapInfo(snapInfoText(event.shiftKey ? "off (Shift)" : "axis focus"));
     }
   }
 
@@ -1899,24 +3413,132 @@ canvas.addEventListener("mouseleave", () => {
 });
 
 canvas.addEventListener("mousedown", (event) => {
+  const canvasPoint = toCanvasPoint(event);
+
   if (state.mode === "select") {
-    applySelectClick(findShapeAtPoint(toCanvasPoint(event)));
+    applySelectClick(findShapeAtPoint(canvasPoint));
+    return;
+  }
+
+  if (state.mode === "move") {
+    if (state.selection.size === 0) {
+      setStatus("Select one or more shapes before moving.", true);
+      return;
+    }
+
+    const hit = findShapeAtPoint(canvasPoint);
+    if (!hit || !state.selection.has(hit)) {
+      setStatus("Press on a selected shape to move it.", true);
+      return;
+    }
+
+    const point = canvasPoint;
+    state.isDragging = true;
+    state.moveDragPoint = point;
+    state.moveDidChange = false;
+    state.lastPointerPoint = point;
+    state.hoverPoint = null;
+    state.draftPoint = point;
+    state.draftCurrentPoint = point;
+    setStatus(`Moving ${state.selection.size} selected shape${state.selection.size === 1 ? "" : "s"}.`);
+    render(point);
+    return;
+  }
+
+  if (state.mode === "point") {
+    const rawPoint = toDrawPoint(event);
+    let point = rawPoint;
+    if (!event.shiftKey) {
+      const nearest = findNearestSnapTarget(rawPoint, state.snapRadius);
+      if (nearest) {
+        point = nearest;
+        setSnapInfo(snapInfoText(`target: ${kindLabel(nearest.kind)}`));
+      } else {
+        setSnapInfo(snapInfoText("target: none"));
+      }
+    } else {
+      setSnapInfo(snapInfoText("off (Shift)"));
+    }
+    addPoint(point);
+    return;
+  }
+
+  if (state.mode === "parabola") {
+    const rawPoint = toDrawPoint(event);
+    if (!state.parabolaDrafting) {
+      let focus = rawPoint;
+      let snapped = false;
+      focus = applyVisibleGridSnap(focus);
+      if (!event.shiftKey) {
+        const nearest = findNearestSnapTarget(rawPoint, state.snapRadius);
+        if (nearest) {
+          focus = nearest;
+          snapped = true;
+        }
+      }
+
+      state.parabolaDrafting = true;
+      state.parabolaStage = "vertex";
+      state.parabolaVertexPoint = null;
+      state.isDragging = true;
+      state.hoverPoint = null;
+      state.pendingDiameterCircle = null;
+      state.draftPoint = focus;
+      state.draftCurrentPoint = focus;
+      state.lastPointerPoint = rawPoint;
+      if (snapped) {
+        setSnapInfo(snapInfoText(`target: ${kindLabel(focus.kind)}`));
+      } else {
+        setSnapInfo(event.shiftKey ? snapInfoText("off (Shift)") : snapInfoText("target: none"));
+      }
+      setStatus(`Parabola anchor set at (${focus.x}, ${focus.y}). Drag the lowest point, then release to place the C point.`);
+      render(state.draftCurrentPoint);
+      return;
+    }
+
+    if (state.parabolaStage === "focus") {
+      const focusPoint = event.shiftKey
+        ? rawPoint
+        : applyVisibleGridSnap(rawPoint);
+
+      if (distance(state.parabolaVertexPoint, focusPoint) < 1) {
+        setStatus("Parabola needs a distinct C point.", true);
+        render(state.draftCurrentPoint || state.parabolaVertexPoint);
+        return;
+      }
+
+      state.parabolaDrafting = false;
+      state.parabolaStage = null;
+      state.isDragging = false;
+      state.hoverPoint = null;
+      state.pendingDiameterCircle = null;
+      state.draftCurrentPoint = focusPoint;
+      addParabola(state.parabolaVertexPoint, focusPoint);
+      state.draftPoint = null;
+      state.draftCurrentPoint = null;
+      state.parabolaVertexPoint = null;
+      return;
+    }
+
+    state.parabolaVertexPoint = state.draftCurrentPoint || rawPoint;
+    state.parabolaStage = "focus";
+    state.isDragging = false;
+    state.hoverPoint = null;
+    state.pendingDiameterCircle = null;
+    setStatus(`Drag the C point away from (${state.parabolaVertexPoint.x}, ${state.parabolaVertexPoint.y}), then press to finish.`);
+    render(state.parabolaVertexPoint);
     return;
   }
 
   if (state.mode === "label") {
     const point = toDrawPoint(event);
+    addLabel(point);
     return;
   }
 
   if (state.mode === "angle") {
     if (tryOpenAngleEditor(event, toCanvasPoint(event))) return;
     analyzePointAnglesAt(toCanvasPoint(event));
-    return;
-  }
-
-  if (state.mode === "delete") {
-    deleteAtPoint(toCanvasPoint(event));
     return;
   }
 
@@ -1945,7 +3567,7 @@ canvas.addEventListener("mousedown", (event) => {
         snapped = true;
       }
     }
-  } else if (state.mode === "line" && !event.shiftKey) {
+  } else if ((state.mode === "line" || state.mode === "parabola") && !event.shiftKey) {
     const nearest = findNearestSnapTarget(rawStart, state.snapRadius);
     if (nearest) {
       startPoint = nearest;
@@ -1972,15 +3594,59 @@ canvas.addEventListener("mousedown", (event) => {
       setSnapInfo(event.shiftKey ? snapInfoText("off (Shift)") : snapInfoText("target: none"));
       setStatus(`Drag line from (${state.draftPoint.x}, ${state.draftPoint.y}) and release.${event.shiftKey ? " (snap off)" : ""}`);
     }
-  } else {
+  } else if (state.mode === "circle") {
     setStatus(`Drag circle radius from (${state.draftPoint.x}, ${state.draftPoint.y}) and release.`);
+  } else if (state.mode === "parabola") {
+    if (state.parabolaStage === "focus") {
+      setStatus(`Drag the C point from (${state.parabolaVertexPoint.x}, ${state.parabolaVertexPoint.y}) and press to finish. Snap locks to 4 axis directions.`);
+    } else {
+      setStatus(`Drag parabola vertex from (${state.draftPoint.x}, ${state.draftPoint.y}) and release. Snap locks to 4 axis directions.`);
+    }
   }
 
   render(state.draftCurrentPoint);
 });
 
 canvas.addEventListener("mouseup", (event) => {
+  if (state.mode === "move") {
+    if (!state.isDragging || !state.moveDragPoint) {
+      return;
+    }
+
+    state.isDragging = false;
+    state.moveDragPoint = null;
+    state.draftPoint = null;
+    state.draftCurrentPoint = null;
+    state.hoverPoint = null;
+    state.lastPointerPoint = null;
+
+    rebuildMarkup();
+    updateEquationLegend();
+    highlightMarkupForShapes(state.selection, { scroll: false });
+    render(toCanvasPoint(event));
+
+    const moved = state.moveDidChange;
+    state.moveDidChange = false;
+    setStatus(moved
+      ? `Moved ${state.selection.size} selected shape${state.selection.size === 1 ? "" : "s"}.`
+      : "Move canceled.");
+    return;
+  }
+
   if (!state.isDragging || !state.draftPoint || state.mode === "select") {
+    return;
+  }
+
+  if (state.mode === "parabola") {
+    if (state.parabolaStage === "vertex") {
+      state.parabolaVertexPoint = state.draftCurrentPoint || state.draftPoint;
+      state.parabolaStage = "focus";
+      state.isDragging = true;
+      state.hoverPoint = null;
+      state.pendingDiameterCircle = null;
+      setStatus(`Now drag the C point away from (${state.parabolaVertexPoint.x}, ${state.parabolaVertexPoint.y}), then press to finish.`);
+      render();
+    }
     return;
   }
 
@@ -1996,6 +3662,8 @@ canvas.addEventListener("mouseup", (event) => {
     if (nearest) {
       end = nearest;
     }
+  } else if (state.mode === "parabola" && !event.shiftKey) {
+    end = snapParabolaAxisPoint(start, rawEnd);
   }
 
   if (state.mode === "line" && state.lineDrawMode !== "diameter") {
@@ -2016,23 +3684,50 @@ canvas.addEventListener("mouseup", (event) => {
     const splits = (state.lineDrawMode === "diameter" && diameterCircle)
       ? [{ x: diameterCircle.cx, y: diameterCircle.cy }]
       : [];
+    if (distance(start, end) < 1) {
+      render();
+      setStatus("Click without drag does not create a line. Use Point mode to place a point.");
+      return;
+    }
     addLine(start, end, splits);
-  } else {
+  } else if (state.mode === "circle") {
     addCircle(start, end);
+  } else if (state.mode === "parabola") {
+    if (distance(start, end) < 1) {
+      render();
+      setStatus("Click without drag does not create a parabola. Drag to a focus point.");
+      return;
+    }
+    addParabola(start, end);
   }
 });
 
+canvas.addEventListener("dblclick", (event) => {
+  if (state.mode !== "angle") {
+    return;
+  }
+
+  event.preventDefault();
+  toggleAlternateAngleView(toCanvasPoint(event));
+});
+
 selectBtn.addEventListener("click", () => setMode("select"));
+moveBtn.addEventListener("click", () => setMode("move"));
 lineBtn.addEventListener("click", () => setMode("line"));
+pointBtn.addEventListener("click", () => setMode("point"));
 circleBtn.addEventListener("click", () => setMode("circle"));
+parabolaBtn.addEventListener("click", () => setMode("parabola"));
 labelBtn.addEventListener("click", () => setMode("label"));
 angleBtn.addEventListener("click", () => setMode("angle"));
-deleteBtn.addEventListener("click", () => setMode("delete"));
+deleteBtn.addEventListener("click", () => deleteSelectionWithConfirm());
 
 undoBtn.addEventListener("click", () => {
   state.draftPoint = null;
   state.draftCurrentPoint = null;
   state.isDragging = false;
+  state.parabolaDrafting = false;
+  state.parabolaStage = null;
+  state.parabolaVertexPoint = null;
   const snapshot = state.actions.pop();
   if (!snapshot) {
     setStatus("Nothing to undo.");
@@ -2055,9 +3750,16 @@ clearBtn.addEventListener("click", () => {
   state.draftCurrentPoint = null;
   state.pendingDiameterCircle = null;
   state.isDragging = false;
+  state.parabolaDrafting = false;
+  state.parabolaStage = null;
+  state.parabolaVertexPoint = null;
   state.hoverPoint = null;
   state.angleAnalysis = null;
+  state.referenceImage = null;
+  state.imageCirclePick = null;
+  state.imageDebugOverlay = null;
   state.selection.clear();
+  updateEquationLegend();
   updateMarkupHighlight([]);
   if (state.mode === "line") {
     setSnapInfo(snapInfoText("target: none"));
@@ -2076,6 +3778,26 @@ copyBtn.addEventListener("click", async () => {
   }
 });
 
+rebuildVerticesBtn?.addEventListener("click", () => {
+  rebuildVertices();
+});
+
+removeVerticesBtn?.addEventListener("click", () => {
+  removeVertices();
+});
+
+if (verticesLinesBtn) {
+  verticesLinesBtn.addEventListener("click", () => {
+    toggleVertexLines();
+  });
+}
+
+if (allVerticesAnglesBtn) {
+  allVerticesAnglesBtn.addEventListener("click", () => {
+    toggleAllVertexAngles();
+  });
+}
+
 if (colorPickerEl) {
   colorPickerEl.addEventListener("input", (event) => {
     setDrawingColor(event.target.value);
@@ -2093,6 +3815,10 @@ window.addEventListener("resize", () => {
 });
 
 window.addEventListener("mouseup", () => {
+  if (state.mode === "parabola") {
+    return;
+  }
+
   if (!state.isDragging) {
     return;
   }
@@ -2111,6 +3837,16 @@ window.addEventListener("mouseup", () => {
 
 window.addEventListener("keydown", (event) => {
   const key = event.key.toLowerCase();
+  const target = event.target;
+
+  if (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement ||
+    target?.isContentEditable
+  ) {
+    return;
+  }
 
   if (event.key === "Shift") {
     if (state.mode !== "line") {
@@ -2130,6 +3866,12 @@ window.addEventListener("keydown", (event) => {
   }
 
   if (event.metaKey || event.ctrlKey || event.altKey) {
+    return;
+  }
+
+  if (key === "backspace") {
+    event.preventDefault();
+    deleteSelectionWithConfirm();
     return;
   }
 
@@ -2170,9 +3912,7 @@ window.addEventListener("keydown", (event) => {
   }
 
   if (key === "0") {
-    state.showArcDiffs = !state.showArcDiffs;
-    if (state.angleAnalysis) render();
-    setStatus(`Arc differences ${state.showArcDiffs ? "on" : "off"} (0).`);
+    toggleAlternateAngleView();
     return;
   }
 
@@ -2219,6 +3959,8 @@ window.addEventListener("keyup", (event) => {
   applySnapFromLastPointer(false);
 });
 
+document.addEventListener("click", closeTopLegendsOnOutsideClick);
+
 angleEditorEl.addEventListener("keydown", (e) => {
   if (e.key === "Enter") { e.preventDefault(); commitAngleEdit(); }
   if (e.key === "Escape") { e.preventDefault(); hideAngleEditor(); }
@@ -2237,6 +3979,8 @@ markupOutput.addEventListener("input", () => {
     const parsed = markupOutput.value.split("\n").map(parseMarkupLine).filter(Boolean);
     pushUndoSnapshot();
     state.shapes = parsed;
+    removeDuplicatePointShapes();
+    markupOutput.value = state.shapes.map(shapeToMarkup).filter(Boolean).join("\n");
     state.angleAnalysis = null;
     render();
   }, 350);
@@ -2256,24 +4000,963 @@ const aiPromptEl = document.getElementById("aiPrompt");
 const aiSendBtn  = document.getElementById("aiSendBtn");
 const aiStatusEl = document.getElementById("aiStatus");
 const aiAppendEl = document.getElementById("aiAppend");
+const aiModelSelectEl = document.getElementById("aiModelSelect");
+const aiUseImageBtn = document.getElementById("aiUseImageBtn");
+const aiRemoveImageBtn = document.getElementById("aiRemoveImageBtn");
+const aiDebugOverlayEl = document.getElementById("aiDebugOverlay");
+const aiImageInputEl = document.getElementById("aiImageInput");
+const aiImagePreviewEl = document.getElementById("aiImagePreview");
+const aiImagePreviewWrapEl = document.getElementById("aiImagePreviewWrap");
+const aiImageMetaEl = document.getElementById("aiImageMeta");
 const markupLoadBtn = document.getElementById("markupLoadBtn");
 const markupSaveBtn = document.getElementById("markupSaveBtn");
+
+let aiImagePayload = null;
 
 function setAiStatus(msg, type = "") {
   aiStatusEl.textContent = msg;
   aiStatusEl.className = `ai-status ${type}`;
 }
 
+function resetAiImagePreview() {
+  aiImagePayload = null;
+  state.imageCirclePick = null;
+  state.imageDebugOverlay = null;
+  state.referenceImage = null;
+  if (aiImagePreviewEl) {
+    aiImagePreviewEl.removeAttribute("src");
+  }
+  if (aiImagePreviewWrapEl) {
+    aiImagePreviewWrapEl.classList.add("is-empty");
+  }
+  if (aiImageMetaEl) {
+    aiImageMetaEl.textContent = "No image selected.";
+  }
+}
+
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("Could not read the image file."));
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImageFromUrl(url) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("Could not decode the image file."));
+    image.src = url;
+  });
+}
+
+function clampNumber(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function solveLinear3x3(matrix, rhs) {
+  const a = matrix.map((row, i) => [...row, rhs[i]]);
+
+  for (let pivot = 0; pivot < 3; pivot += 1) {
+    let best = pivot;
+    for (let row = pivot + 1; row < 3; row += 1) {
+      if (Math.abs(a[row][pivot]) > Math.abs(a[best][pivot])) {
+        best = row;
+      }
+    }
+
+    if (Math.abs(a[best][pivot]) < 1e-9) {
+      return null;
+    }
+
+    if (best !== pivot) {
+      const tmp = a[pivot];
+      a[pivot] = a[best];
+      a[best] = tmp;
+    }
+
+    const denom = a[pivot][pivot];
+    for (let col = pivot; col < 4; col += 1) {
+      a[pivot][col] /= denom;
+    }
+
+    for (let row = 0; row < 3; row += 1) {
+      if (row === pivot) {
+        continue;
+      }
+      const factor = a[row][pivot];
+      for (let col = pivot; col < 4; col += 1) {
+        a[row][col] -= factor * a[pivot][col];
+      }
+    }
+  }
+
+  return [a[0][3], a[1][3], a[2][3]];
+}
+
+function fitQuadratic(points) {
+  if (!Array.isArray(points) || points.length < 20) {
+    return null;
+  }
+
+  let sx = 0;
+  let sx2 = 0;
+  let sx3 = 0;
+  let sx4 = 0;
+  let sy = 0;
+  let sxy = 0;
+  let sx2y = 0;
+
+  for (const point of points) {
+    const x = point.x;
+    const y = point.y;
+    const x2 = x * x;
+    sx += x;
+    sx2 += x2;
+    sx3 += x2 * x;
+    sx4 += x2 * x2;
+    sy += y;
+    sxy += x * y;
+    sx2y += x2 * y;
+  }
+
+  const solution = solveLinear3x3(
+    [
+      [sx4, sx3, sx2],
+      [sx3, sx2, sx],
+      [sx2, sx, points.length]
+    ],
+    [sx2y, sxy, sy]
+  );
+
+  if (!solution) {
+    return null;
+  }
+
+  const [a, b, c] = solution;
+  const meanY = sy / points.length;
+  let sse = 0;
+  let sst = 0;
+  for (const point of points) {
+    const predicted = a * point.x * point.x + b * point.x + c;
+    const err = point.y - predicted;
+    sse += err * err;
+    const centered = point.y - meanY;
+    sst += centered * centered;
+  }
+
+  const r2 = sst > 1e-9 ? 1 - sse / sst : 0;
+  return { a, b, c, r2 };
+}
+
+function componentIntersectsText(component, textBoxes) {
+  if (!textBoxes.length) {
+    return false;
+  }
+
+  const a = component.bbox;
+  for (const b of textBoxes) {
+    const overlapW = Math.max(0, Math.min(a.maxX, b.maxX) - Math.max(a.minX, b.minX));
+    const overlapH = Math.max(0, Math.min(a.maxY, b.maxY) - Math.max(a.minY, b.minY));
+    if (overlapW <= 0 || overlapH <= 0) {
+      continue;
+    }
+    const overlapArea = overlapW * overlapH;
+    const compArea = Math.max(1, (a.maxX - a.minX + 1) * (a.maxY - a.minY + 1));
+    if (overlapArea / compArea > 0.25) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function classifyComponentToPrimitive(component) {
+  const samples = component.samples;
+  if (!samples.length) {
+    return null;
+  }
+
+  const bboxW = component.bbox.maxX - component.bbox.minX + 1;
+  const bboxH = component.bbox.maxY - component.bbox.minY + 1;
+  const pixelCount = component.count;
+  const area = bboxW * bboxH;
+  const density = pixelCount / Math.max(1, area);
+
+  const cx = component.sumX / pixelCount;
+  const cy = component.sumY / pixelCount;
+
+  if (pixelCount <= 180 && bboxW <= 18 && bboxH <= 18) {
+    return {
+      kind: "point",
+      data: { x: Math.round(cx), y: Math.round(cy) }
+    };
+  }
+
+  let covXX = 0;
+  let covXY = 0;
+  let covYY = 0;
+  for (const sample of samples) {
+    const dx = sample.x - cx;
+    const dy = sample.y - cy;
+    covXX += dx * dx;
+    covXY += dx * dy;
+    covYY += dy * dy;
+  }
+  covXX /= samples.length;
+  covXY /= samples.length;
+  covYY /= samples.length;
+
+  const theta = 0.5 * Math.atan2(2 * covXY, covXX - covYY);
+  const ux = Math.cos(theta);
+  const uy = Math.sin(theta);
+  const vx = -uy;
+  const vy = ux;
+
+  let minU = Infinity;
+  let maxU = -Infinity;
+  let minV = Infinity;
+  let maxV = -Infinity;
+  const rotated = [];
+  for (const sample of samples) {
+    const dx = sample.x - cx;
+    const dy = sample.y - cy;
+    const u = dx * ux + dy * uy;
+    const v = dx * vx + dy * vy;
+    rotated.push({ x: u, y: v });
+    minU = Math.min(minU, u);
+    maxU = Math.max(maxU, u);
+    minV = Math.min(minV, v);
+    maxV = Math.max(maxV, v);
+  }
+
+  const major = Math.max(1, maxU - minU);
+  const minor = Math.max(1, maxV - minV);
+  const aspect = major / minor;
+
+  const fromRotated = (u, v) => ({
+    x: Math.round(cx + u * ux + v * vx),
+    y: Math.round(cy + u * uy + v * vy)
+  });
+
+  if (aspect >= 3.2 && major >= 14 && minor <= 24 && density <= 0.86) {
+    const centerV = (minV + maxV) / 2;
+    return {
+      kind: "line",
+      data: {
+        x1: fromRotated(minU, centerV).x,
+        y1: fromRotated(minU, centerV).y,
+        x2: fromRotated(maxU, centerV).x,
+        y2: fromRotated(maxU, centerV).y
+      }
+    };
+  }
+
+  const radiusEstimate = (bboxW + bboxH) / 4;
+  let radiusMean = 0;
+  for (const sample of samples) {
+    radiusMean += Math.hypot(sample.x - cx, sample.y - cy);
+  }
+  radiusMean /= samples.length;
+
+  let radiusVar = 0;
+  for (const sample of samples) {
+    const d = Math.hypot(sample.x - cx, sample.y - cy) - radiusMean;
+    radiusVar += d * d;
+  }
+  radiusVar /= samples.length;
+  const radiusCv = Math.sqrt(radiusVar) / Math.max(1, radiusMean);
+  const bboxRatio = bboxW / Math.max(1, bboxH);
+  const ringDensity = pixelCount / Math.max(1, Math.PI * radiusEstimate * radiusEstimate);
+
+  if (
+    bboxRatio >= 0.75 && bboxRatio <= 1.25 &&
+    radiusCv <= 0.24 &&
+    ringDensity >= 0.08 && ringDensity <= 0.78 &&
+    radiusEstimate >= 8
+  ) {
+    const radiusRobust = Math.max(radiusMean, radiusEstimate * 0.92);
+    return {
+      kind: "circle",
+      data: {
+        cx: Math.round(cx),
+        cy: Math.round(cy),
+        r: Math.max(6, Math.round(radiusRobust))
+      }
+    };
+  }
+
+  if (pixelCount >= 70 && major >= 26 && aspect >= 1.3) {
+    const fit = fitQuadratic(rotated);
+    if (fit && Math.abs(fit.a) > 0.002 && fit.r2 >= 0.56) {
+      const vertexU = -fit.b / (2 * fit.a);
+      const vertexV = fit.c - (fit.b * fit.b) / (4 * fit.a);
+      const p = 1 / (4 * fit.a);
+      const focusV = vertexV + p;
+      const vertex = fromRotated(vertexU, vertexV);
+      const focus = fromRotated(vertexU, focusV);
+      if (distance(vertex, focus) >= 4) {
+        return {
+          kind: "parabola",
+          data: {
+            vx: vertex.x,
+            vy: vertex.y,
+            fx: focus.x,
+            fy: focus.y
+          }
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
+function inferLinesBetweenPointCandidates(points, mask, width, height) {
+  if (!Array.isArray(points) || points.length < 2) {
+    return [];
+  }
+
+  const maxPairs = 260;
+  let pairCount = 0;
+  const inferred = [];
+
+  const hasInkNear = (x, y) => {
+    const cx = Math.round(x);
+    const cy = Math.round(y);
+    for (let dy = -1; dy <= 1; dy += 1) {
+      for (let dx = -1; dx <= 1; dx += 1) {
+        const px = cx + dx;
+        const py = cy + dy;
+        if (px < 0 || py < 0 || px >= width || py >= height) {
+          continue;
+        }
+        if (mask[py * width + px]) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  for (let i = 0; i < points.length; i += 1) {
+    for (let j = i + 1; j < points.length; j += 1) {
+      pairCount += 1;
+      if (pairCount > maxPairs) {
+        return inferred;
+      }
+
+      const a = points[i];
+      const b = points[j];
+      const length = Math.hypot(b.x - a.x, b.y - a.y);
+      if (length < 18 || length > Math.min(width, height) * 0.95) {
+        continue;
+      }
+
+      const samples = Math.max(18, Math.round(length / 3));
+      let hit = 0;
+      for (let k = 0; k <= samples; k += 1) {
+        const t = k / samples;
+        const x = a.x + (b.x - a.x) * t;
+        const y = a.y + (b.y - a.y) * t;
+        if (hasInkNear(x, y)) {
+          hit += 1;
+        }
+      }
+
+      const ratio = hit / (samples + 1);
+      if (ratio >= 0.72) {
+        inferred.push({ x1: a.x, y1: a.y, x2: b.x, y2: b.y });
+      }
+    }
+  }
+
+  return inferred;
+}
+
+function inferLinesFromMask(mask, width, height) {
+  const lines = [];
+  const steps = 18;
+
+  const traceLine = (x1, y1, x2, y2) => {
+    let hits = 0;
+    for (let i = 0; i <= steps; i += 1) {
+      const t = i / steps;
+      const x = Math.round(x1 + (x2 - x1) * t);
+      const y = Math.round(y1 + (y2 - y1) * t);
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          const px = x + dx;
+          const py = y + dy;
+          if (px < 0 || py < 0 || px >= width || py >= height) {
+            continue;
+          }
+          if (mask[py * width + px]) {
+            hits += 1;
+            dx = 2;
+            dy = 2;
+          }
+        }
+      }
+    }
+    return hits / (steps + 1);
+  };
+
+  // Horizontal scan candidates.
+  for (let y = 6; y < height - 6; y += Math.max(6, Math.round(height / 22))) {
+    let runStart = -1;
+    for (let x = 0; x < width; x += 1) {
+      const on = mask[y * width + x] === 1;
+      if (on && runStart < 0) runStart = x;
+      if ((!on || x === width - 1) && runStart >= 0) {
+        const runEnd = on && x === width - 1 ? x : x - 1;
+        if (runEnd - runStart >= width * 0.18) {
+          lines.push({ x1: runStart, y1: y, x2: runEnd, y2: y });
+        }
+        runStart = -1;
+      }
+    }
+  }
+
+  // Vertical scan candidates.
+  for (let x = 6; x < width - 6; x += Math.max(6, Math.round(width / 22))) {
+    let runStart = -1;
+    for (let y = 0; y < height; y += 1) {
+      const on = mask[y * width + x] === 1;
+      if (on && runStart < 0) runStart = y;
+      if ((!on || y === height - 1) && runStart >= 0) {
+        const runEnd = on && y === height - 1 ? y : y - 1;
+        if (runEnd - runStart >= height * 0.18) {
+          lines.push({ x1: x, y1: runStart, x2: x, y2: runEnd });
+        }
+        runStart = -1;
+      }
+    }
+  }
+
+  return lines.filter((line) => traceLine(line.x1, line.y1, line.x2, line.y2) >= 0.7);
+}
+
+function buildImageToMathTransform({ detectWidth, detectHeight, foregroundMaxAbsX, foregroundMaxAbsY }) {
+  const visibleHalfX = state.logicalWidth / (2 * state.gridUnit);
+  const visibleHalfY = state.logicalHeight / (2 * state.gridUnit);
+  const targetHalfY = visibleHalfY * 0.5;
+  const imageCenterX = detectWidth / 2;
+  const imageCenterY = detectHeight / 2;
+
+  const maxAbsX = Math.max(1, foregroundMaxAbsX || detectWidth / 2);
+  const maxAbsY = Math.max(1, foregroundMaxAbsY || detectHeight / 2);
+
+  const unitsPerPixelByY = targetHalfY / maxAbsY;
+  const unitsPerPixelByX = (visibleHalfX * 0.92) / maxAbsX;
+  const unitsPerPixel = Math.max(0.001, Math.min(unitsPerPixelByY, unitsPerPixelByX));
+
+  return {
+    imageCenterX,
+    imageCenterY,
+    unitsPerPixel,
+    detectToMathPoint(point) {
+      return {
+        x: (point.x - imageCenterX) * unitsPerPixel,
+        y: (imageCenterY - point.y) * unitsPerPixel
+      };
+    }
+  };
+}
+
+function derivePrimitiveScaleBounds({ primitives, labels, detectWidth, detectHeight, drawWidth, drawHeight }) {
+  const centerX = detectWidth / 2;
+  const centerY = detectHeight / 2;
+  let maxAbsX = Math.max(1, drawWidth / 2);
+  let maxAbsY = Math.max(1, drawHeight / 2);
+
+  const addPoint = (x, y) => {
+    maxAbsX = Math.max(maxAbsX, Math.abs(x - centerX));
+    maxAbsY = Math.max(maxAbsY, Math.abs(y - centerY));
+  };
+
+  for (const primitive of primitives) {
+    if (primitive.kind === "point") {
+      addPoint(primitive.data.x, primitive.data.y);
+      continue;
+    }
+
+    if (primitive.kind === "line") {
+      addPoint(primitive.data.x1, primitive.data.y1);
+      addPoint(primitive.data.x2, primitive.data.y2);
+      continue;
+    }
+
+    if (primitive.kind === "circle") {
+      const { cx, cy, r } = primitive.data;
+      maxAbsX = Math.max(maxAbsX, Math.abs(cx - centerX) + r);
+      maxAbsY = Math.max(maxAbsY, Math.abs(cy - centerY) + r);
+      continue;
+    }
+
+    if (primitive.kind === "parabola") {
+      addPoint(primitive.data.vx, primitive.data.vy);
+      addPoint(primitive.data.fx, primitive.data.fy);
+    }
+  }
+
+  for (const label of labels) {
+    addPoint(label.x, label.y);
+  }
+
+  return { maxAbsX, maxAbsY };
+}
+
+async function extractGeometryFromImagePayload(payload) {
+  const image = await loadImageFromUrl(payload.dataUrl);
+  const detectWidth = 550;
+  const detectHeight = 350;
+  const detectCanvas = document.createElement("canvas");
+  detectCanvas.width = detectWidth;
+  detectCanvas.height = detectHeight;
+  const context = detectCanvas.getContext("2d", { willReadFrequently: true });
+  if (!context) {
+    throw new Error("Could not inspect image pixels.");
+  }
+
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, detectWidth, detectHeight);
+  const drawScale = Math.min(detectWidth / image.width, detectHeight / image.height);
+  const drawWidth = Math.max(1, Math.round(image.width * drawScale));
+  const drawHeight = Math.max(1, Math.round(image.height * drawScale));
+  const offsetX = Math.round((detectWidth - drawWidth) / 2);
+  const offsetY = Math.round((detectHeight - drawHeight) / 2);
+  context.drawImage(image, offsetX, offsetY, drawWidth, drawHeight);
+
+  const labels = [];
+  const textBoxes = [];
+  if (typeof window.TextDetector === "function") {
+    try {
+      const detector = new window.TextDetector();
+      const textResults = await detector.detect(detectCanvas);
+      for (const item of textResults) {
+        const rawText = String(item.rawValue || "").trim().replace(/\s+/g, " ");
+        if (!rawText) {
+          continue;
+        }
+        const box = item.boundingBox;
+        if (!box) {
+          continue;
+        }
+
+        const x = Math.round(box.x + box.width / 2);
+        const y = Math.round(box.y + box.height / 2);
+        labels.push({ x, y, text: rawText });
+        textBoxes.push({
+          minX: box.x,
+          minY: box.y,
+          maxX: box.x + box.width,
+          maxY: box.y + box.height
+        });
+      }
+    } catch (error) {
+      // TextDetector is optional; fallback is geometry-only extraction.
+    }
+  }
+
+  const imageData = context.getImageData(0, 0, detectWidth, detectHeight);
+  const rgba = imageData.data;
+  const total = detectWidth * detectHeight;
+  const gray = new Uint8Array(total);
+  let graySum = 0;
+  let graySqSum = 0;
+  for (let i = 0; i < total; i += 1) {
+    const p = i * 4;
+    const value = Math.round(0.299 * rgba[p] + 0.587 * rgba[p + 1] + 0.114 * rgba[p + 2]);
+    gray[i] = value;
+    graySum += value;
+    graySqSum += value * value;
+  }
+
+  const mean = graySum / total;
+  const variance = Math.max(0, graySqSum / total - mean * mean);
+  const std = Math.sqrt(variance);
+  const threshold = clampNumber(Math.round(mean - std * 0.18), 40, 225);
+
+  const binary = new Uint8Array(total);
+  for (let i = 0; i < total; i += 1) {
+    binary[i] = gray[i] < threshold ? 1 : 0;
+  }
+
+  // Remove isolated pixels for less noise in connected components.
+  const denoised = new Uint8Array(total);
+  for (let y = 1; y < detectHeight - 1; y += 1) {
+    for (let x = 1; x < detectWidth - 1; x += 1) {
+      const idx = y * detectWidth + x;
+      if (!binary[idx]) {
+        continue;
+      }
+      let neighbors = 0;
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          if (!dx && !dy) {
+            continue;
+          }
+          neighbors += binary[(y + dy) * detectWidth + (x + dx)];
+        }
+      }
+      if (neighbors >= 2) {
+        denoised[idx] = 1;
+      }
+    }
+  }
+
+  const components = [];
+  const visited = new Uint8Array(total);
+  const queue = [];
+  const neighborOffsets = [
+    -detectWidth - 1, -detectWidth, -detectWidth + 1,
+    -1, 1,
+    detectWidth - 1, detectWidth, detectWidth + 1
+  ];
+
+  for (let start = 0; start < total; start += 1) {
+    if (!denoised[start] || visited[start]) {
+      continue;
+    }
+
+    queue.length = 0;
+    queue.push(start);
+    visited[start] = 1;
+    let head = 0;
+
+    let count = 0;
+    let sumX = 0;
+    let sumY = 0;
+    let minX = detectWidth;
+    let minY = detectHeight;
+    let maxX = 0;
+    let maxY = 0;
+    const samples = [];
+
+    while (head < queue.length) {
+      const idx = queue[head];
+      head += 1;
+
+      const y = Math.floor(idx / detectWidth);
+      const x = idx - y * detectWidth;
+      count += 1;
+      sumX += x;
+      sumY += y;
+      minX = Math.min(minX, x);
+      minY = Math.min(minY, y);
+      maxX = Math.max(maxX, x);
+      maxY = Math.max(maxY, y);
+      if (samples.length < 6000 || (count % 4 === 0 && samples.length < 9000)) {
+        samples.push({ x, y });
+      }
+
+      for (const offset of neighborOffsets) {
+        const next = idx + offset;
+        if (next < 0 || next >= total || visited[next] || !denoised[next]) {
+          continue;
+        }
+
+        const ny = Math.floor(next / detectWidth);
+        const nx = next - ny * detectWidth;
+        if (Math.abs(nx - x) > 1 || Math.abs(ny - y) > 1) {
+          continue;
+        }
+
+        visited[next] = 1;
+        queue.push(next);
+      }
+    }
+
+    if (count < 12) {
+      continue;
+    }
+
+    const boxArea = (maxX - minX + 1) * (maxY - minY + 1);
+    if (boxArea > total * 0.72) {
+      continue;
+    }
+
+    components.push({
+      count,
+      sumX,
+      sumY,
+      samples,
+      bbox: { minX, minY, maxX, maxY }
+    });
+  }
+
+  const primitives = [];
+  for (const component of components) {
+    if (componentIntersectsText(component, textBoxes)) {
+      continue;
+    }
+
+    const primitive = classifyComponentToPrimitive(component);
+    if (primitive) {
+      primitives.push(primitive);
+    }
+  }
+
+  const pointPrimitives = primitives
+    .filter((primitive) => primitive.kind === "point")
+    .map((primitive) => ({ x: primitive.data.x, y: primitive.data.y }));
+
+  const inferredLines = inferLinesBetweenPointCandidates(pointPrimitives, denoised, detectWidth, detectHeight);
+  for (const line of inferredLines) {
+    primitives.push({ kind: "line", data: line });
+  }
+
+  const scanLines = inferLinesFromMask(denoised, detectWidth, detectHeight);
+  for (const line of scanLines) {
+    primitives.push({ kind: "line", data: line });
+  }
+
+  const primitiveBounds = derivePrimitiveScaleBounds({
+    primitives,
+    labels,
+    detectWidth,
+    detectHeight,
+    drawWidth,
+    drawHeight
+  });
+
+  const transform = buildImageToMathTransform({
+    detectWidth,
+    detectHeight,
+    foregroundMaxAbsX: primitiveBounds.maxAbsX,
+    foregroundMaxAbsY: primitiveBounds.maxAbsY
+  });
+
+  const result = {
+    points: [],
+    lines: [],
+    circles: [],
+    detectedCircles: [],
+    parabolas: [],
+    labels: [],
+    transform: {
+      unitsPerPixel: transform.unitsPerPixel,
+      targetHalfYUnits: (state.logicalHeight / (2 * state.gridUnit)) * 0.5
+    }
+  };
+
+  for (const primitive of primitives) {
+    if (primitive.kind === "point") {
+      const mathPoint = transform.detectToMathPoint({ x: primitive.data.x, y: primitive.data.y });
+      const canvasPoint = mathToCanvasPoint(mathPoint);
+      result.points.push({
+        x: canvasPoint.x,
+        y: canvasPoint.y
+      });
+      continue;
+    }
+
+    if (primitive.kind === "line") {
+      const startMath = transform.detectToMathPoint({ x: primitive.data.x1, y: primitive.data.y1 });
+      const endMath = transform.detectToMathPoint({ x: primitive.data.x2, y: primitive.data.y2 });
+      const startCanvas = mathToCanvasPoint(startMath);
+      const endCanvas = mathToCanvasPoint(endMath);
+      result.lines.push({
+        x1: startCanvas.x,
+        y1: startCanvas.y,
+        x2: endCanvas.x,
+        y2: endCanvas.y
+      });
+      continue;
+    }
+
+    if (primitive.kind === "circle") {
+      const centerMath = transform.detectToMathPoint({ x: primitive.data.cx, y: primitive.data.cy });
+      const centerCanvas = mathToCanvasPoint(centerMath);
+      const radiusUnits = primitive.data.r * transform.unitsPerPixel;
+      const canvasRadius = Math.max(6, Math.round(radiusUnits * state.gridUnit));
+      result.circles.push({
+        cx: centerCanvas.x,
+        cy: centerCanvas.y,
+        r: canvasRadius
+      });
+      result.detectedCircles.push({
+        detectCx: primitive.data.cx,
+        detectCy: primitive.data.cy,
+        detectR: primitive.data.r,
+        cx: centerCanvas.x,
+        cy: centerCanvas.y,
+        r: canvasRadius
+      });
+      continue;
+    }
+
+    if (primitive.kind === "parabola") {
+      const vertexMath = transform.detectToMathPoint({ x: primitive.data.vx, y: primitive.data.vy });
+      const focusMath = transform.detectToMathPoint({ x: primitive.data.fx, y: primitive.data.fy });
+      const vertexCanvas = mathToCanvasPoint(vertexMath);
+      const focusCanvas = mathToCanvasPoint(focusMath);
+      result.parabolas.push({
+        vx: vertexCanvas.x,
+        vy: vertexCanvas.y,
+        fx: focusCanvas.x,
+        fy: focusCanvas.y
+      });
+    }
+  }
+
+  for (const label of labels) {
+    const labelMath = transform.detectToMathPoint({ x: label.x, y: label.y });
+    const labelCanvas = mathToCanvasPoint(labelMath);
+    result.labels.push({
+      x: labelCanvas.x,
+      y: labelCanvas.y,
+      text: label.text
+    });
+  }
+
+  const lineSeen = new Set();
+  result.lines = result.lines.filter((line) => {
+    const a = `${Math.round(line.x1)},${Math.round(line.y1)}`;
+    const b = `${Math.round(line.x2)},${Math.round(line.y2)}`;
+    const key = a < b ? `${a}|${b}` : `${b}|${a}`;
+    if (lineSeen.has(key)) {
+      return false;
+    }
+    lineSeen.add(key);
+    return true;
+  });
+
+  result.debugOverlay = {
+    lines: result.lines.map((line) => ({ ...line })),
+    circles: result.circles.map((circle) => ({ ...circle })),
+    points: result.points.map((point) => ({ ...point })),
+    parabolas: result.parabolas.map((parabola) => ({ ...parabola })),
+    info: `${components.length} comp, ${primitives.length} prim, th=${threshold}, span=(${Math.round(primitiveBounds.maxAbsX)},${Math.round(primitiveBounds.maxAbsY)})`
+  };
+
+  result.circlePickContext = {
+    detectWidth,
+    detectHeight,
+    threshold,
+    gray,
+    mask: denoised,
+    transform: {
+      imageCenterX: transform.imageCenterX,
+      imageCenterY: transform.imageCenterY,
+      unitsPerPixel: transform.unitsPerPixel
+    },
+    circles: result.detectedCircles
+  };
+
+  return result;
+}
+
+async function buildAiImagePayload(file) {
+  const rawDataUrl = await readFileAsDataUrl(file);
+  const image = await loadImageFromUrl(rawDataUrl);
+  const maxDimension = 900;
+  const scale = Math.min(1, maxDimension / Math.max(image.width, image.height));
+  const targetWidth = Math.max(1, Math.round(image.width * scale));
+  const targetHeight = Math.max(1, Math.round(image.height * scale));
+  const canvasEl = document.createElement("canvas");
+  canvasEl.width = targetWidth;
+  canvasEl.height = targetHeight;
+  const context = canvasEl.getContext("2d");
+  if (!context) {
+    throw new Error("Could not prepare the image.");
+  }
+
+  context.drawImage(image, 0, 0, targetWidth, targetHeight);
+  const mimeType = file.type === "image/png" ? "image/png" : "image/jpeg";
+  const dataUrl = canvasEl.toDataURL(mimeType, mimeType === "image/png" ? undefined : 0.8);
+
+  return {
+    dataUrl,
+    width: targetWidth,
+    height: targetHeight,
+    name: file.name || "reference-image"
+  };
+}
+
+async function handleAiImageSelection() {
+  const file = aiImageInputEl?.files?.[0] || null;
+  if (!file) {
+    resetAiImagePreview();
+    return;
+  }
+
+  if (!file.type.startsWith("image/")) {
+    resetAiImagePreview();
+    setAiStatus("Choose an image file for AI reference.", "error");
+    return;
+  }
+
+  try {
+    setAiStatus("Preparing image…");
+    aiImagePayload = await buildAiImagePayload(file);
+    if (aiImagePreviewEl) {
+      aiImagePreviewEl.src = aiImagePayload.dataUrl;
+    }
+    if (aiImagePreviewWrapEl) {
+      aiImagePreviewWrapEl.classList.remove("is-empty");
+    }
+    if (aiImageMetaEl) {
+      aiImageMetaEl.textContent = `${aiImagePayload.name} - ${aiImagePayload.width}x${aiImagePayload.height}`;
+    }
+    setAiStatus("Reference image ready.");
+  } catch (error) {
+    resetAiImagePreview();
+    setAiStatus(`Image error: ${error.message}`, "error");
+  }
+}
+
+async function loadAiModels() {
+  if (!aiModelSelectEl) {
+    return;
+  }
+
+  try {
+    const res = await fetch("/api/ai-models");
+    const data = await res.json();
+    if (!res.ok || !Array.isArray(data.models)) {
+      throw new Error(data.error || "Could not load AI models.");
+    }
+
+    aiModelSelectEl.innerHTML = data.models
+      .map((model) => `<option value="${escapeHtml(model.id)}">${escapeHtml(model.label)}${model.description ? ` - ${escapeHtml(model.description)}` : ""}</option>`)
+      .join("");
+
+    const selected = data.models.some((model) => model.id === data.defaultModel)
+      ? data.defaultModel
+      : data.models[0]?.id;
+
+    if (selected) {
+      aiModelSelectEl.value = selected;
+    }
+  } catch (error) {
+    setAiStatus(`Model list unavailable: ${error.message}`, "error");
+  }
+}
+
 async function runAiDraw() {
   const prompt = aiPromptEl.value.trim();
-  if (!prompt) { setAiStatus("Enter a description first.", "error"); return; }
+  const hasImage = Boolean(aiImagePayload?.dataUrl);
+  if (!prompt && !hasImage) {
+    setAiStatus("Enter a description or choose a reference image first.", "error");
+    return;
+  }
+  const model = aiModelSelectEl?.value || "gpt-4o-mini";
   aiSendBtn.disabled = true;
   setAiStatus("Generating…");
   try {
     const res = await fetch("/api/ai-markup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt, gridUnit: state.gridUnit })
+      body: JSON.stringify({
+        prompt,
+        gridUnit: state.gridUnit,
+        model,
+        imageDataUrl: aiImagePayload?.dataUrl || ""
+      })
     });
     const data = await res.json();
     if (!res.ok || data.error) throw new Error(data.error || "Server error");
@@ -2290,10 +4973,15 @@ async function runAiDraw() {
         addLineCore({ x: shape.x1, y: shape.y1 }, { x: shape.x2, y: shape.y2 }, shape.color);
       } else if (shape.type === "circle") {
         addCircleCore(shape.cx, shape.cy, shape.r, shape.color);
+      } else if (shape.type === "point") {
+        if (!hasPointShape(shape)) {
+          state.shapes.push(shape);
+        }
+      } else if (shape.type === "parabola") {
+        state.shapes.push(shape);
       } else if (shape.type === "label") {
         state.shapes.push(shape);
       }
-      // skip bare point shapes — lines/circles generate their own
     }
 
     markupOutput.value = state.shapes.map(shapeToMarkup).filter(Boolean).join("\n");
@@ -2306,7 +4994,78 @@ async function runAiDraw() {
   }
 }
 
+async function useImageOnlyOnCanvas() {
+  if (!aiImagePayload?.dataUrl) {
+    setAiStatus("Choose a reference image first.", "error");
+    return;
+  }
+
+  if (aiUseImageBtn) {
+    aiUseImageBtn.disabled = true;
+  }
+  setAiStatus("Loading image as background…");
+
+  try {
+    const image = await loadImageFromUrl(aiImagePayload.dataUrl);
+
+    if (!aiAppendEl.checked) {
+      pushUndoSnapshot();
+      state.shapes = [];
+      state.selection.clear();
+      state.equationEditMode = false;
+      updateEquationLegend();
+      updateMarkupHighlight([]);
+      rebuildMarkup();
+    }
+
+    state.imageCirclePick = null;
+    state.imageDebugOverlay = null;
+    state.referenceImage = {
+      image,
+      width: image.width,
+      height: image.height,
+      name: aiImagePayload.name || "reference-image"
+    };
+
+    render();
+
+    setAiStatus("Image loaded as 50% opacity background. Use drawing tools to trace over it.", "ok");
+    setStatus(`Background image ${state.referenceImage.name} loaded.`);
+  } catch (error) {
+    setAiStatus(`Image load failed: ${error.message}`, "error");
+  } finally {
+    if (aiUseImageBtn) {
+      aiUseImageBtn.disabled = false;
+    }
+  }
+}
+
+function removeBackgroundImage() {
+  if (!state.referenceImage) {
+    setStatus("No background image to remove.");
+    return;
+  }
+
+  state.referenceImage = null;
+  state.imageCirclePick = null;
+  render();
+  setAiStatus("Background image removed.", "ok");
+  setStatus("Background image removed.");
+}
+
+loadAiModels();
+resetAiImagePreview();
+if (aiDebugOverlayEl) {
+  aiDebugOverlayEl.checked = state.showImageDebugOverlay;
+}
+aiImageInputEl?.addEventListener("change", handleAiImageSelection);
 aiSendBtn.addEventListener("click", runAiDraw);
+aiUseImageBtn?.addEventListener("click", useImageOnlyOnCanvas);
+aiRemoveImageBtn?.addEventListener("click", removeBackgroundImage);
+aiDebugOverlayEl?.addEventListener("change", () => {
+  state.showImageDebugOverlay = Boolean(aiDebugOverlayEl.checked);
+  render();
+});
 aiPromptEl.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) runAiDraw();
 });
@@ -2341,6 +5100,8 @@ function syncMarkupCursorToCanvas() {
 
   if (coveredMarkup.size === 0) {
     state.selection.clear();
+    state.equationEditMode = false;
+    updateEquationLegend();
     updateMarkupHighlight([]);
     render();
     return;
@@ -2350,6 +5111,8 @@ function syncMarkupCursorToCanvas() {
   state.selection = new Set(
     state.shapes.filter(s => coveredMarkup.has(shapeToMarkup(s)))
   );
+  state.equationEditMode = false;
+  updateEquationLegend();
 
   const hlRows = [];
   pos = 0;
@@ -2364,6 +5127,8 @@ function syncMarkupCursorToCanvas() {
 markupOutput.addEventListener("click",   syncMarkupCursorToCanvas);
 markupOutput.addEventListener("keyup",   syncMarkupCursorToCanvas);
 markupOutput.addEventListener("mouseup", syncMarkupCursorToCanvas);
+updateEquationLegend();
+syncSolverUi();
 
 const markupFloatBtn = document.getElementById("markupFloatBtn");
 const markupCard     = markupFloatBtn.closest(".markup-card");
@@ -2443,6 +5208,8 @@ markupLoadBtn.addEventListener("click", () => {
       const parsed = text.split("\n").map(parseMarkupLine).filter(Boolean);
       pushUndoSnapshot();
       state.shapes = parsed;
+      removeDuplicatePointShapes();
+      markupOutput.value = state.shapes.map(shapeToMarkup).filter(Boolean).join("\n");
       state.angleAnalysis = null;
       render();
     };

@@ -65,6 +65,9 @@ function computeBounds(items) {
     } else if (item.shape === "circle") {
       includePoint(p.cx - p.r, p.cy - p.r);
       includePoint(p.cx + p.r, p.cy + p.r);
+    } else if (item.shape === "parabola") {
+      includePoint(p.vx, p.vy);
+      includePoint(p.fx, p.fy);
     } else if (item.shape === "label") {
       includePoint(p.x, p.y);
     }
@@ -132,6 +135,40 @@ function renderItem(item, offsetX, offsetY, itemIndex, interactive) {
 
   if (item.shape === "circle") {
     return `<circle${dataAttrs} cx="${p.cx + offsetX}" cy="${p.cy + offsetY}" r="${p.r}" stroke="${getColor(p)}" stroke-width="3" fill="none"/>`;
+  }
+
+  if (item.shape === "parabola") {
+    const vx = Number(p.vx);
+    const vy = Number(p.vy);
+    const fx = Number(p.fx);
+    const fy = Number(p.fy);
+    if (!Number.isFinite(vx) || !Number.isFinite(vy) || !Number.isFinite(fx) || !Number.isFinite(fy)) {
+      return "";
+    }
+
+    const dx = fx - vx;
+    const dy = fy - vy;
+    const focusDistance = Math.hypot(dx, dy);
+    if (focusDistance < 1e-6) {
+      return "";
+    }
+
+    const ux = dx / focusDistance;
+    const uy = dy / focusDistance;
+    const px = -uy;
+    const py = ux;
+    const span = Math.max(800, focusDistance * 160);
+    const sampleCount = 160;
+    const pathParts = [];
+    for (let i = 0; i <= sampleCount; i += 1) {
+      const t = -span + (2 * span * i) / sampleCount;
+      const x = (t * t) / (4 * focusDistance);
+      const wx = vx + ux * x + px * t;
+      const wy = vy + uy * x + py * t;
+      pathParts.push(`${i === 0 ? "M" : "L"} ${wx + offsetX} ${wy + offsetY}`);
+    }
+
+    return `<path${dataAttrs} d="${pathParts.join(" ")}" stroke="${getColor(p)}" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`;
   }
 
   if (item.shape === "label") {
