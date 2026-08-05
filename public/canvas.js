@@ -1,6 +1,12 @@
 const canvas = document.getElementById("drawCanvas");
 const angleEditorEl = document.getElementById("angleEditor");
 const markupOutput = document.getElementById("markupOutput");
+const markupLegendEl = document.getElementById("markupLegend");
+const markupLegendPanelEl = markupLegendEl?.querySelector(".markup-legend-panel");
+const markupFloatBtn = document.getElementById("markupFloatBtn");
+const aiLegendEl = document.getElementById("aiLegend");
+const aiLegendPanelEl = aiLegendEl?.querySelector(".ai-legend-panel");
+const aiFloatBtn = document.getElementById("aiFloatBtn");
 const statusEl = document.getElementById("status");
 const selectBtn = document.getElementById("selectBtn");
 const lineBtn = document.getElementById("lineBtn");
@@ -12,7 +18,6 @@ const angleBtn = document.getElementById("angleBtn");
 const deleteBtn = document.getElementById("deleteBtn");
 const undoBtn = document.getElementById("undoBtn");
 const clearBtn = document.getElementById("clearBtn");
-const copyBtn = document.getElementById("copyBtn");
 const rebuildVerticesBtn = document.getElementById("rebuildVerticesBtn");
 const removeVerticesBtn = document.getElementById("removeVerticesBtn");
 const moveBtn = document.getElementById("moveBtn");
@@ -99,6 +104,7 @@ const state = {
   parabolaStage: null,
   parabolaVertexPoint: null,
   referenceImage: null,
+  referenceImageSelected: false,
   imageCirclePick: null,
   imageDebugOverlay: null,
   showImageDebugOverlay: true,
@@ -112,8 +118,11 @@ function resizeCanvasToFit() {
     return;
   }
 
-  const maxWidth = Math.max(1, wrap.clientWidth);
-  const maxHeight = Math.max(1, wrap.clientHeight);
+  const wrapStyle = window.getComputedStyle(wrap);
+  const horizontalPadding = parseFloat(wrapStyle.paddingLeft) + parseFloat(wrapStyle.paddingRight);
+  const verticalPadding = parseFloat(wrapStyle.paddingTop) + parseFloat(wrapStyle.paddingBottom);
+  const maxWidth = Math.max(1, wrap.clientWidth - horizontalPadding);
+  const maxHeight = Math.max(1, wrap.clientHeight - verticalPadding);
   const ratio = state.logicalWidth / state.logicalHeight;
 
   let displayWidth = maxWidth;
@@ -159,7 +168,7 @@ function closeTopLegendsOnOutsideClick(event) {
   }
 
   for (const legend of topLegendDetailsEls) {
-    if (legend.open) {
+    if (legend.open && !legend.classList.contains("is-floating")) {
       legend.open = false;
     }
   }
@@ -308,6 +317,7 @@ function setMode(mode) {
   state.moveDidChange = false;
   state.equationEditMode = false;
   if (mode !== "select" && mode !== "move") state.selection.clear();
+  if (mode !== "select") state.referenceImageSelected = false;
   updateEquationLegend();
 
   selectBtn.classList.toggle("is-active", mode === "select");
@@ -645,9 +655,22 @@ function updateEquationLegend() {
   }
 
   const selectedShapes = Array.from(state.selection);
+  if (state.referenceImageSelected && state.referenceImage) {
+    const bounds = getReferenceImageBounds();
+    equationLegendEl.open = true;
+    equationLegendTitleEl.textContent = "Background image";
+    equationLegendTextEl.textContent = bounds
+      ? `${state.referenceImage.name} — ${Math.round(bounds.width)}×${Math.round(bounds.height)} canvas pixels.`
+      : state.referenceImage.name;
+    if (equationLegendEditorEl) equationLegendEditorEl.innerHTML = "";
+    equationLegendTextEl.classList.remove("is-clickable");
+    state.equationEditMode = false;
+    return;
+  }
+
   if (selectedShapes.length === 0) {
     equationLegendTitleEl.textContent = "Selection equation";
-    equationLegendTextEl.textContent = "Select a line, circle, point, or label to see its equation here.";
+    equationLegendTextEl.textContent = "Select geometry or a background image to inspect it here.";
     if (equationLegendEditorEl) equationLegendEditorEl.innerHTML = "";
     equationLegendTextEl.classList.remove("is-clickable");
     state.equationEditMode = false;
@@ -1569,15 +1592,15 @@ function drawCoordHover(canvasPoint) {
   ctx.restore();
 }
 
-function drawReferenceImage() {
+function getReferenceImageBounds() {
   const reference = state.referenceImage;
   if (!reference || !reference.image) {
-    return;
+    return null;
   }
 
   const source = reference.image;
   if (!source.width || !source.height) {
-    return;
+    return null;
   }
 
   const widthScale = state.logicalWidth / source.width;
@@ -1588,10 +1611,215 @@ function drawReferenceImage() {
   const offsetX = Math.round((state.logicalWidth - drawWidth) / 2);
   const offsetY = Math.round((state.logicalHeight - drawHeight) / 2);
 
+  return {
+    x: offsetX,
+    y: offsetY,
+    width: drawWidth,
+    height: drawHeight
+  };
+}
+
+function pointInReferenceImage(point) {
+  const bounds = getReferenceImageBounds();
+  if (!bounds || !point) {
+    return false;
+  }
+
+  return point.x >= bounds.x &&
+    point.x <= bounds.x + bounds.width &&
+    point.y >= bounds.y &&
+    point.y <= bounds.y + bounds.height;
+}
+
+function projectDetectedObjectsToReference(extraction) {
+  const bounds = getReferenceImageBounds();
+  const sourceRect = extraction?.detectionImageRect;
+  const objects = extraction?.detectionObjects;
+  if (!bounds || !sourceRect || !objects || sourceRect.width <= 0 || sourceRect.height <= 0) {
+    return null;
+  }
+
+  const scaleX = bounds.width / sourceRect.width;
+  const scaleY = bounds.height / sourceRect.height;
+  const radiusScale = (scaleX + scaleY) / 2;
+  const mapPoint = (x, y) => ({
+    x: bounds.x + (x - sourceRect.x) * scaleX,
+    y: bounds.y + (y - sourceRect.y) * scaleY
+  });
+
+  const lines = (objects.lines || []).map((line) => {
+    const start = mapPoint(line.x1, line.y1);
+    const end = mapPoint(line.x2, line.y2);
+    return { type: "line", x1: start.x, y1: start.y, x2: end.x, y2: end.y };
+  });
+  const circles = (objects.circles || []).map((circle) => {
+    const center = mapPoint(circle.cx, circle.cy);
+    return { type: "circle", cx: center.x, cy: center.y, r: circle.r * radiusScale };
+  });
+  const points = (objects.points || []).map((point) => {
+    const mapped = mapPoint(point.x, point.y);
+    return { type: "point", x: mapped.x, y: mapped.y };
+  });
+  const parabolas = (objects.parabolas || []).map((parabola) => {
+    const vertex = mapPoint(parabola.vx, parabola.vy);
+    const focus = mapPoint(parabola.fx, parabola.fy);
+    return { type: "parabola", vx: vertex.x, vy: vertex.y, fx: focus.x, fy: focus.y };
+  });
+  const labels = (objects.labels || []).map((label) => {
+    const mapped = mapPoint(label.x, label.y);
+    return { type: "label", x: mapped.x, y: mapped.y, text: label.text };
+  });
+
+  return {
+    lines,
+    circles,
+    points,
+    parabolas,
+    labels,
+    info: extraction.debugOverlay?.info || "background objects"
+  };
+}
+
+function findDetectedImageObjectAtPoint(point) {
+  const overlay = state.imageDebugOverlay;
+  if (!overlay || !point) {
+    return null;
+  }
+
+  const pointHit = (overlay.points || []).find((candidate) =>
+    !candidate.imported && Math.hypot(point.x - candidate.x, point.y - candidate.y) <= 12
+  );
+  if (pointHit) return pointHit;
+
+  const labelHit = (overlay.labels || []).find((candidate) =>
+    !candidate.imported && Math.hypot(point.x - candidate.x, point.y - candidate.y) <= 24
+  );
+  if (labelHit) return labelHit;
+
+  const circleHit = (overlay.circles || []).find((candidate) =>
+    !candidate.imported && Math.abs(Math.hypot(point.x - candidate.cx, point.y - candidate.cy) - candidate.r) <= 12
+  );
+  if (circleHit) return circleHit;
+
+  const lineHit = (overlay.lines || []).find((candidate) =>
+    !candidate.imported && distToSegment(point.x, point.y, candidate.x1, candidate.y1, candidate.x2, candidate.y2) <= 11
+  );
+  if (lineHit) return lineHit;
+
+  return (overlay.parabolas || []).find((candidate) =>
+    !candidate.imported && pointNearParabola(point, candidate, 12)
+  ) || null;
+}
+
+function importDetectedImageObject(object) {
+  if (!object || object.imported) {
+    return false;
+  }
+
+  pushUndoSnapshot();
+  const id = getNextId();
+  const previousShapeCount = state.shapes.length;
+
+  if (object.type === "line") {
+    addLineCore(
+      { x: object.x1, y: object.y1 },
+      { x: object.x2, y: object.y2 },
+      state.color
+    );
+  } else if (object.type === "circle") {
+    addCircleCore(object.cx, object.cy, object.r, state.color);
+  } else if (object.type === "point") {
+    state.shapes.push({ type: "point", id, x: object.x, y: object.y, color: state.color });
+  } else if (object.type === "parabola") {
+    state.shapes.push({
+      type: "parabola",
+      id,
+      vx: object.vx,
+      vy: object.vy,
+      fx: object.fx,
+      fy: object.fy,
+      color: state.color
+    });
+    appendPointShapeIfMissing({ x: object.vx, y: object.vy }, id, state.color);
+    appendPointShapeIfMissing({ x: object.fx, y: object.fy }, id, state.color);
+  } else if (object.type === "label") {
+    state.shapes.push({
+      type: "label",
+      id,
+      x: object.x,
+      y: object.y,
+      text: object.text || "Label",
+      color: state.color
+    });
+  } else {
+    state.actions.pop();
+    return false;
+  }
+
+  if (state.shapes.length === previousShapeCount) {
+    state.actions.pop();
+    return false;
+  }
+
+  object.imported = true;
+  removeDuplicatePointShapes();
+  state.referenceImageSelected = false;
+  state.selection = new Set(state.shapes.filter((shape) => shapeBaseId(shape.id) === String(id)));
+  state.equationEditMode = false;
+  rebuildMarkup();
+  updateEquationLegend();
+  highlightMarkupForShapes(state.selection);
+  render();
+  setStatus(`Selected detected ${object.type} and added it as editable geometry id=${id}.`);
+  return true;
+}
+
+function drawReferenceImage() {
+  const reference = state.referenceImage;
+  const bounds = getReferenceImageBounds();
+  if (!reference || !bounds) {
+    return;
+  }
+
   ctx.save();
   ctx.globalAlpha = 0.5;
   ctx.imageSmoothingEnabled = true;
-  ctx.drawImage(source, offsetX, offsetY, drawWidth, drawHeight);
+  ctx.drawImage(reference.image, bounds.x, bounds.y, bounds.width, bounds.height);
+  ctx.restore();
+}
+
+function drawReferenceImageSelection() {
+  if (!state.referenceImageSelected) {
+    return;
+  }
+
+  const bounds = getReferenceImageBounds();
+  if (!bounds) {
+    return;
+  }
+
+  const handleSize = 9;
+  const halfHandle = handleSize / 2;
+  const corners = [
+    [bounds.x, bounds.y],
+    [bounds.x + bounds.width, bounds.y],
+    [bounds.x, bounds.y + bounds.height],
+    [bounds.x + bounds.width, bounds.y + bounds.height]
+  ];
+
+  ctx.save();
+  ctx.strokeStyle = "#06b6d4";
+  ctx.fillStyle = "#ecfeff";
+  ctx.lineWidth = 2;
+  ctx.setLineDash([8, 5]);
+  ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
+  ctx.setLineDash([]);
+
+  for (const [x, y] of corners) {
+    ctx.fillRect(x - halfHandle, y - halfHandle, handleSize, handleSize);
+    ctx.strokeRect(x - halfHandle, y - halfHandle, handleSize, handleSize);
+  }
+
   ctx.restore();
 }
 
@@ -1606,6 +1834,7 @@ function drawImageDebugOverlay() {
   ctx.lineWidth = 1.6;
 
   for (const line of overlay.lines || []) {
+    if (line.imported) continue;
     ctx.strokeStyle = "rgba(59, 130, 246, 0.9)";
     ctx.beginPath();
     ctx.moveTo(line.x1, line.y1);
@@ -1615,6 +1844,7 @@ function drawImageDebugOverlay() {
 
   ctx.setLineDash([4, 3]);
   for (const circle of overlay.circles || []) {
+    if (circle.imported) continue;
     ctx.strokeStyle = "rgba(245, 158, 11, 0.95)";
     ctx.beginPath();
     ctx.arc(circle.cx, circle.cy, Math.max(2, circle.r), 0, Math.PI * 2);
@@ -1627,6 +1857,7 @@ function drawImageDebugOverlay() {
 
   ctx.setLineDash([]);
   for (const point of overlay.points || []) {
+    if (point.imported) continue;
     ctx.fillStyle = "rgba(239, 68, 68, 0.9)";
     ctx.beginPath();
     ctx.arc(point.x, point.y, 2.8, 0, Math.PI * 2);
@@ -1634,11 +1865,19 @@ function drawImageDebugOverlay() {
   }
 
   for (const parabola of overlay.parabolas || []) {
+    if (parabola.imported) continue;
     ctx.strokeStyle = "rgba(16, 185, 129, 0.92)";
     ctx.beginPath();
     ctx.moveTo(parabola.vx, parabola.vy);
     ctx.lineTo(parabola.fx, parabola.fy);
     ctx.stroke();
+  }
+
+  for (const label of overlay.labels || []) {
+    if (label.imported) continue;
+    ctx.fillStyle = "rgba(139, 92, 246, 0.95)";
+    ctx.font = "600 11px Inter, sans-serif";
+    ctx.fillText(String(label.text || "Label"), label.x, label.y);
   }
 
   ctx.fillStyle = "rgba(30, 41, 59, 0.82)";
@@ -1658,6 +1897,7 @@ function render(mousePoint = null) {
   drawAxes();
   drawImageDebugOverlay();
   drawShapes();
+  drawReferenceImageSelection();
   drawAllVertexAngleOverlays();
   drawAngleAnalysisOverlay();
   drawSnapIndicator();
@@ -1804,8 +2044,27 @@ function deleteSelectionWithConfirm() {
     return;
   }
 
+  if (state.referenceImageSelected && state.referenceImage) {
+    const imageName = state.referenceImage.name || "background image";
+    if (!window.confirm(`Delete selected background image ${imageName}?`)) {
+      setStatus("Delete canceled.");
+      return;
+    }
+
+    state.referenceImage = null;
+    state.referenceImageSelected = false;
+    state.imageCirclePick = null;
+    state.imageDebugOverlay = null;
+    updateEquationLegend();
+    updateMarkupHighlight([]);
+    render();
+    setAiStatus("Background image removed.", "ok");
+    setStatus(`Deleted selected background image ${imageName}.`);
+    return;
+  }
+
   if (state.selection.size === 0) {
-    setStatus("Select one or more shapes before deleting.", true);
+    setStatus("Select one or more shapes or the background image before deleting.", true);
     return;
   }
 
@@ -1970,11 +2229,13 @@ function highlightMarkupForShapes(shapes, { scroll = true } = {}) {
   }
   updateMarkupHighlight(hlRows);
   if (scroll && selStart !== -1) {
-    markupOutput.focus({ preventScroll: true });
     markupOutput.setSelectionRange(selStart, selEnd);
     const lineH = markupOutput.scrollHeight / Math.max(1, lines.length);
     markupOutput.scrollTop = Math.max(0, (hlRows[0] || 0) * lineH - 40);
     markupHighlightLayer.scrollTop = markupOutput.scrollTop;
+    if (!markupLegendEl || markupLegendEl.open) {
+      markupOutput.focus({ preventScroll: true });
+    }
   }
 }
 
@@ -2011,12 +2272,15 @@ function applySelectClick(hit) {
     _selClickCount = 0;
     _selHitShape = null;
     state.selection.clear();
+    state.referenceImageSelected = false;
     state.equationEditMode = false;
     updateEquationLegend();
     updateMarkupHighlight([]);
     render();
     return;
   }
+
+  state.referenceImageSelected = false;
 
   // same shape group → expand; different shape → restart
   const sameBid = _selHitShape && shapeBaseId(hit.id) === shapeBaseId(_selHitShape.id);
@@ -2057,6 +2321,24 @@ function applySelectClick(hit) {
   updateEquationLegend();
   highlightMarkupForShapes(selected);
   render();
+}
+
+function selectReferenceImage() {
+  if (!state.referenceImage) {
+    return false;
+  }
+
+  _selClickCount = 0;
+  _selHitShape = null;
+  clearTimeout(_selClickTimer);
+  state.selection.clear();
+  state.referenceImageSelected = true;
+  state.equationEditMode = false;
+  updateEquationLegend();
+  updateMarkupHighlight([]);
+  render();
+  setStatus(`Selected background image ${state.referenceImage.name}. Press Delete or Backspace to remove it.`);
+  return true;
 }
 
 // ── angle label inline editor ──
@@ -3416,7 +3698,16 @@ canvas.addEventListener("mousedown", (event) => {
   const canvasPoint = toCanvasPoint(event);
 
   if (state.mode === "select") {
-    applySelectClick(findShapeAtPoint(canvasPoint));
+    const hit = findShapeAtPoint(canvasPoint);
+    if (hit) {
+      applySelectClick(hit);
+    } else if (importDetectedImageObject(findDetectedImageObjectAtPoint(canvasPoint))) {
+      // Detected image objects become normal editable geometry when selected.
+    } else if (pointInReferenceImage(canvasPoint)) {
+      selectReferenceImage();
+    } else {
+      applySelectClick(null);
+    }
     return;
   }
 
@@ -3756,6 +4047,7 @@ clearBtn.addEventListener("click", () => {
   state.hoverPoint = null;
   state.angleAnalysis = null;
   state.referenceImage = null;
+  state.referenceImageSelected = false;
   state.imageCirclePick = null;
   state.imageDebugOverlay = null;
   state.selection.clear();
@@ -3767,15 +4059,6 @@ clearBtn.addEventListener("click", () => {
   rebuildMarkup();
   render();
   setStatus("Canvas cleared.");
-});
-
-copyBtn.addEventListener("click", async () => {
-  try {
-    await navigator.clipboard.writeText(markupOutput.value || "");
-    setStatus("Markup copied to clipboard.");
-  } catch (error) {
-    setStatus("Clipboard copy failed. Select text manually.", true);
-  }
 });
 
 rebuildVerticesBtn?.addEventListener("click", () => {
@@ -3813,6 +4096,13 @@ for (const button of quickColorButtons) {
 window.addEventListener("resize", () => {
   resizeCanvasToFit();
 });
+
+if (typeof ResizeObserver !== "undefined" && canvas.parentElement) {
+  const canvasResizeObserver = new ResizeObserver(() => {
+    resizeCanvasToFit();
+  });
+  canvasResizeObserver.observe(canvas.parentElement);
+}
 
 window.addEventListener("mouseup", () => {
   if (state.mode === "parabola") {
@@ -4023,6 +4313,7 @@ function resetAiImagePreview() {
   state.imageCirclePick = null;
   state.imageDebugOverlay = null;
   state.referenceImage = null;
+  state.referenceImageSelected = false;
   if (aiImagePreviewEl) {
     aiImagePreviewEl.removeAttribute("src");
   }
@@ -4173,7 +4464,7 @@ function componentIntersectsText(component, textBoxes) {
   return false;
 }
 
-function classifyComponentToPrimitive(component) {
+function classifyComponentToPrimitive(component, mask, maskWidth, maskHeight) {
   const samples = component.samples;
   if (!samples.length) {
     return null;
@@ -4278,14 +4569,24 @@ function classifyComponentToPrimitive(component) {
     radiusEstimate >= 8
   ) {
     const radiusRobust = Math.max(radiusMean, radiusEstimate * 0.92);
-    return {
-      kind: "circle",
-      data: {
-        cx: Math.round(cx),
-        cy: Math.round(cy),
-        r: Math.max(6, Math.round(radiusRobust))
-      }
-    };
+    const circleSupport = measureCircleEdgeSupport(
+      mask,
+      maskWidth,
+      maskHeight,
+      cx,
+      cy,
+      radiusRobust
+    );
+    if (circleSupport.accepted) {
+      return {
+        kind: "circle",
+        data: {
+          cx: Math.round(cx),
+          cy: Math.round(cy),
+          r: Math.max(6, Math.round(radiusRobust))
+        }
+      };
+    }
   }
 
   if (pixelCount >= 70 && major >= 26 && aspect >= 1.3) {
@@ -4312,6 +4613,143 @@ function classifyComponentToPrimitive(component) {
   }
 
   return null;
+}
+
+function measureCircleEdgeSupport(mask, width, height, cx, cy, radius) {
+  if (!mask || !Number.isFinite(radius) || radius < 6) {
+    return { accepted: false, coverage: 0, largestGap: Infinity };
+  }
+
+  const sampleCount = Math.round(clampNumber((Math.PI * 2 * radius) / 3, 72, 180));
+  const radialTolerance = Math.max(2, Math.min(7, radius * 0.045));
+  const supported = new Array(sampleCount).fill(false);
+  const octantHits = new Array(8).fill(0);
+  const octantTotals = new Array(8).fill(0);
+
+  const hasInkNear = (x, y) => {
+    const px = Math.round(x);
+    const py = Math.round(y);
+    for (let oy = -1; oy <= 1; oy += 1) {
+      for (let ox = -1; ox <= 1; ox += 1) {
+        const sx = px + ox;
+        const sy = py + oy;
+        if (sx >= 0 && sy >= 0 && sx < width && sy < height && mask[sy * width + sx]) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  for (let i = 0; i < sampleCount; i += 1) {
+    const angle = (i / sampleCount) * Math.PI * 2;
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    const octant = Math.min(7, Math.floor((i * 8) / sampleCount));
+    octantTotals[octant] += 1;
+
+    for (let offset = -radialTolerance; offset <= radialTolerance; offset += 1) {
+      const testRadius = radius + offset;
+      if (hasInkNear(cx + cos * testRadius, cy + sin * testRadius)) {
+        supported[i] = true;
+        octantHits[octant] += 1;
+        break;
+      }
+    }
+  }
+
+  const hitCount = supported.filter(Boolean).length;
+  const coverage = hitCount / sampleCount;
+  let largestGap = 0;
+  let currentGap = 0;
+  for (let i = 0; i < sampleCount * 2; i += 1) {
+    if (supported[i % sampleCount]) {
+      currentGap = 0;
+    } else {
+      currentGap += 1;
+      largestGap = Math.max(largestGap, Math.min(currentGap, sampleCount));
+    }
+  }
+
+  const octantsCovered = octantHits.filter((hits, index) =>
+    hits / Math.max(1, octantTotals[index]) >= 0.42
+  ).length;
+  const accepted = coverage >= 0.68 &&
+    largestGap <= Math.ceil(sampleCount * 0.2) &&
+    octantsCovered === 8;
+
+  return { accepted, coverage, largestGap, sampleCount };
+}
+
+function inferLargeCirclesFromMask(mask, width, height, components) {
+  const circles = [];
+  const minRadius = 18;
+
+  for (const component of components) {
+    const bboxW = component.bbox.maxX - component.bbox.minX + 1;
+    const bboxH = component.bbox.maxY - component.bbox.minY + 1;
+    const boxAspect = bboxW / Math.max(1, bboxH);
+    const baseRadius = Math.min(bboxW, bboxH) / 2;
+    if (baseRadius < minRadius || boxAspect < 0.72 || boxAspect > 1.28) {
+      continue;
+    }
+
+    const baseCx = (component.bbox.minX + component.bbox.maxX) / 2;
+    const baseCy = (component.bbox.minY + component.bbox.maxY) / 2;
+    const centerStep = Math.max(1, baseRadius * 0.035);
+    let best = null;
+
+    for (const offsetX of [-centerStep, 0, centerStep]) {
+      for (const offsetY of [-centerStep, 0, centerStep]) {
+        for (const radiusFactor of [0.9, 0.94, 0.98, 1, 1.02]) {
+          const candidate = {
+            cx: baseCx + offsetX,
+            cy: baseCy + offsetY,
+            r: baseRadius * radiusFactor
+          };
+          const support = measureCircleEdgeSupport(
+            mask,
+            width,
+            height,
+            candidate.cx,
+            candidate.cy,
+            candidate.r
+          );
+          if (!support.accepted) {
+            continue;
+          }
+
+          const centerPenalty = Math.hypot(offsetX, offsetY) / baseRadius * 0.05;
+          const radiusPenalty = Math.abs(radiusFactor - 1) * 0.03;
+          const score = support.coverage -
+            support.largestGap / support.sampleCount * 0.25 -
+            centerPenalty -
+            radiusPenalty;
+          if (!best || score > best.score) {
+            best = { ...candidate, score };
+          }
+        }
+      }
+    }
+
+    if (!best) {
+      continue;
+    }
+
+    const duplicate = circles.some((circle) =>
+      Math.hypot(circle.cx - best.cx, circle.cy - best.cy) <= Math.max(5, best.r * 0.08) &&
+      Math.abs(circle.r - best.r) <= Math.max(5, best.r * 0.08)
+    );
+    if (!duplicate) {
+      circles.push({
+        cx: Math.round(best.cx),
+        cy: Math.round(best.cy),
+        r: Math.round(best.r)
+      });
+    }
+  }
+
+  return circles;
 }
 
 function inferLinesBetweenPointCandidates(points, mask, width, height) {
@@ -4694,9 +5132,26 @@ async function extractGeometryFromImagePayload(payload) {
       continue;
     }
 
-    const primitive = classifyComponentToPrimitive(component);
+    const primitive = classifyComponentToPrimitive(component, denoised, detectWidth, detectHeight);
     if (primitive) {
       primitives.push(primitive);
+    }
+  }
+
+  const inferredLargeCircles = inferLargeCirclesFromMask(
+    denoised,
+    detectWidth,
+    detectHeight,
+    components
+  );
+  for (const circle of inferredLargeCircles) {
+    const duplicate = primitives.some((primitive) =>
+      primitive.kind === "circle" &&
+      Math.hypot(primitive.data.cx - circle.cx, primitive.data.cy - circle.cy) <= Math.max(5, circle.r * 0.1) &&
+      Math.abs(primitive.data.r - circle.r) <= Math.max(5, circle.r * 0.1)
+    );
+    if (!duplicate) {
+      primitives.push({ kind: "circle", data: circle });
     }
   }
 
@@ -4845,6 +5300,28 @@ async function extractGeometryFromImagePayload(payload) {
       unitsPerPixel: transform.unitsPerPixel
     },
     circles: result.detectedCircles
+  };
+
+  result.detectionImageRect = {
+    x: offsetX,
+    y: offsetY,
+    width: drawWidth,
+    height: drawHeight
+  };
+  result.detectionObjects = {
+    points: primitives
+      .filter((primitive) => primitive.kind === "point")
+      .map((primitive) => ({ ...primitive.data })),
+    lines: primitives
+      .filter((primitive) => primitive.kind === "line")
+      .map((primitive) => ({ ...primitive.data })),
+    circles: primitives
+      .filter((primitive) => primitive.kind === "circle")
+      .map((primitive) => ({ ...primitive.data })),
+    parabolas: primitives
+      .filter((primitive) => primitive.kind === "parabola")
+      .map((primitive) => ({ ...primitive.data })),
+    labels: labels.map((label) => ({ ...label }))
   };
 
   return result;
@@ -5018,8 +5495,7 @@ async function useImageOnlyOnCanvas() {
       rebuildMarkup();
     }
 
-    state.imageCirclePick = null;
-    state.imageDebugOverlay = null;
+    state.referenceImageSelected = false;
     state.referenceImage = {
       image,
       width: image.width,
@@ -5027,10 +5503,27 @@ async function useImageOnlyOnCanvas() {
       name: aiImagePayload.name || "reference-image"
     };
 
+    setAiStatus("Analyzing objects in the background image…");
+    let detectedCount = 0;
+    try {
+      const extraction = await extractGeometryFromImagePayload(aiImagePayload);
+      state.imageCirclePick = extraction.circlePickContext;
+      state.imageDebugOverlay = projectDetectedObjectsToReference(extraction);
+      if (state.imageDebugOverlay) {
+        detectedCount = ["lines", "circles", "points", "parabolas", "labels"]
+          .reduce((count, key) => count + (state.imageDebugOverlay[key]?.length || 0), 0);
+      }
+    } catch (detectionError) {
+      state.imageCirclePick = null;
+      state.imageDebugOverlay = null;
+    }
+
     render();
 
-    setAiStatus("Image loaded as 50% opacity background. Use drawing tools to trace over it.", "ok");
-    setStatus(`Background image ${state.referenceImage.name} loaded.`);
+    setAiStatus(`Image loaded as a 50% opacity background. ${detectedCount} selectable object${detectedCount === 1 ? "" : "s"} detected.`, "ok");
+    setStatus(detectedCount > 0
+      ? `Background image ${state.referenceImage.name} loaded. Select a detected object to make it editable.`
+      : `Background image ${state.referenceImage.name} loaded; no selectable objects were detected.`);
   } catch (error) {
     setAiStatus(`Image load failed: ${error.message}`, "error");
   } finally {
@@ -5047,7 +5540,11 @@ function removeBackgroundImage() {
   }
 
   state.referenceImage = null;
+  state.referenceImageSelected = false;
   state.imageCirclePick = null;
+  state.imageDebugOverlay = null;
+  updateEquationLegend();
+  updateMarkupHighlight([]);
   render();
   setAiStatus("Background image removed.", "ok");
   setStatus("Background image removed.");
@@ -5130,69 +5627,172 @@ markupOutput.addEventListener("mouseup", syncMarkupCursorToCanvas);
 updateEquationLegend();
 syncSolverUi();
 
-const markupFloatBtn = document.getElementById("markupFloatBtn");
-const markupCard     = markupFloatBtn.closest(".markup-card");
+let floatingLegendZIndex = 10000;
 
-markupFloatBtn.addEventListener("click", () => {
-  const floating = markupCard.classList.toggle("is-floating");
-  markupFloatBtn.textContent = floating ? "⊠" : "↗";
-  markupFloatBtn.title = floating ? "Dock" : "Float";
-  if (floating) {
-    const r = markupCard.getBoundingClientRect();
-    markupCard.style.left   = `${r.left}px`;
-    markupCard.style.top    = `${r.top}px`;
-    markupCard.style.width  = `${r.width}px`;
-    markupCard.style.height = `${r.height}px`;
-  } else {
-    markupCard.style.cssText = "";
-  }
-});
-
-// drag + 4-corner resize for the floating markup card
-(function () {
-  let action = null; // { type: 'drag'|'resize', corner, startX, startY, startL, startT, startW, startH }
-
-  const titleEl = markupCard.querySelector(".card-title");
-
-  function startAction(e, type, corner = null) {
-    if (!markupCard.classList.contains("is-floating")) return;
-    if (type === "drag" && e.target.tagName === "BUTTON") return;
-    const r = markupCard.getBoundingClientRect();
-    action = { type, corner, startX: e.clientX, startY: e.clientY,
-               startL: r.left, startT: r.top, startW: r.width, startH: r.height };
-    e.preventDefault();
+function createFloatingLegendController({ legend, panel, floatButton, minWidth = 360, minHeight = 240, label }) {
+  if (!legend || !panel || !floatButton) {
+    return null;
   }
 
-  titleEl.addEventListener("mousedown", (e) => startAction(e, "drag"));
+  let action = null;
 
-  for (const handle of markupCard.querySelectorAll(".resize-handle")) {
-    const corner = [...handle.classList].find(c => c.startsWith("resize-") && c !== "resize-handle").replace("resize-", "");
-    handle.addEventListener("mousedown", (e) => { startAction(e, "resize", corner); e.stopPropagation(); });
-  }
-
-  document.addEventListener("mousemove", (e) => {
-    if (!action) return;
-    const dx = e.clientX - action.startX, dy = e.clientY - action.startY;
-    if (action.type === "drag") {
-      markupCard.style.left = `${action.startL + dx}px`;
-      markupCard.style.top  = `${action.startT + dy}px`;
+  function clampPanel() {
+    if (!legend.classList.contains("is-floating")) {
       return;
     }
-    const c = action.corner;
-    const minW = 260, minH = 180;
-    let l = action.startL, t = action.startT, w = action.startW, h = action.startH;
-    if (c === "br") { w = Math.max(minW, w + dx); h = Math.max(minH, h + dy); }
-    if (c === "bl") { const nw = Math.max(minW, w - dx); l = action.startL + (w - nw); w = nw; h = Math.max(minH, h + dy); }
-    if (c === "tr") { w = Math.max(minW, w + dx); const nh = Math.max(minH, h - dy); t = action.startT + (h - nh); h = nh; }
-    if (c === "tl") { const nw = Math.max(minW, w - dx); l = action.startL + (w - nw); w = nw; const nh = Math.max(minH, h - dy); t = action.startT + (h - nh); h = nh; }
-    markupCard.style.left   = `${l}px`;
-    markupCard.style.top    = `${t}px`;
-    markupCard.style.width  = `${w}px`;
-    markupCard.style.height = `${h}px`;
+
+    const margin = 8;
+    const rect = panel.getBoundingClientRect();
+    const maxWidth = Math.max(1, window.innerWidth - margin * 2);
+    const maxHeight = Math.max(1, window.innerHeight - margin * 2);
+    const width = Math.min(rect.width, maxWidth);
+    const height = Math.min(rect.height, maxHeight);
+    const left = clampNumber(rect.left, margin, Math.max(margin, window.innerWidth - width - margin));
+    const top = clampNumber(rect.top, margin, Math.max(margin, window.innerHeight - height - margin));
+
+    panel.style.left = `${left}px`;
+    panel.style.top = `${top}px`;
+    panel.style.width = `${width}px`;
+    panel.style.height = `${height}px`;
+  }
+
+  function setFloating(floating) {
+    if (floating) {
+      legend.open = true;
+      const rect = panel.getBoundingClientRect();
+      const margin = 8;
+      const width = Math.min(Math.max(minWidth, rect.width), Math.max(1, window.innerWidth - margin * 2));
+      const height = Math.min(Math.max(minHeight, rect.height), Math.max(1, window.innerHeight - margin * 2));
+      const left = clampNumber(rect.left, margin, Math.max(margin, window.innerWidth - width - margin));
+      const top = clampNumber(rect.top, margin, Math.max(margin, window.innerHeight - height - margin));
+
+      legend.classList.add("is-floating");
+      panel.style.left = `${left}px`;
+      panel.style.top = `${top}px`;
+      panel.style.width = `${width}px`;
+      panel.style.height = `${height}px`;
+      panel.style.zIndex = String(++floatingLegendZIndex);
+    } else {
+      legend.classList.remove("is-floating");
+      panel.removeAttribute("style");
+    }
+
+    floatButton.textContent = floating ? "Dock" : "Float";
+    floatButton.setAttribute("aria-pressed", String(floating));
+    floatButton.title = floating ? `Return ${label} to the top bar` : `Float ${label} over the canvas`;
+  }
+
+  floatButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    setFloating(!legend.classList.contains("is-floating"));
   });
 
-  document.addEventListener("mouseup", () => { action = null; });
-}());
+  function beginAction(event, type, corner = "") {
+    if (!legend.classList.contains("is-floating")) {
+      return;
+    }
+    if (type === "drag" && event.target instanceof Element && event.target.closest("button")) {
+      return;
+    }
+
+    const rect = panel.getBoundingClientRect();
+    action = {
+      type,
+      corner,
+      startX: event.clientX,
+      startY: event.clientY,
+      left: rect.left,
+      top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom
+    };
+    event.preventDefault();
+  }
+
+  panel.addEventListener("mousedown", () => {
+    if (legend.classList.contains("is-floating")) {
+      panel.style.zIndex = String(++floatingLegendZIndex);
+    }
+  }, true);
+
+  panel.querySelector(".floating-legend-toolbar")?.addEventListener("mousedown", (event) => beginAction(event, "drag"));
+  for (const handle of panel.querySelectorAll("[data-resize-corner]")) {
+    handle.addEventListener("mousedown", (event) => {
+      beginAction(event, "resize", handle.dataset.resizeCorner || "");
+      event.stopPropagation();
+    });
+  }
+
+  document.addEventListener("mousemove", (event) => {
+    if (!action) {
+      return;
+    }
+
+    const margin = 8;
+    const dx = event.clientX - action.startX;
+    const dy = event.clientY - action.startY;
+    if (action.type === "drag") {
+      const width = action.right - action.left;
+      const height = action.bottom - action.top;
+      const left = clampNumber(action.left + dx, margin, Math.max(margin, window.innerWidth - width - margin));
+      const top = clampNumber(action.top + dy, margin, Math.max(margin, window.innerHeight - height - margin));
+      panel.style.left = `${left}px`;
+      panel.style.top = `${top}px`;
+      return;
+    }
+
+    const boundedMinWidth = Math.max(1, Math.min(minWidth, window.innerWidth - margin * 2));
+    const boundedMinHeight = Math.max(1, Math.min(minHeight, window.innerHeight - margin * 2));
+    let left = action.left;
+    let right = action.right;
+    let top = action.top;
+    let bottom = action.bottom;
+
+    if (action.corner.includes("l")) {
+      left = clampNumber(action.left + dx, margin, right - boundedMinWidth);
+    }
+    if (action.corner.includes("r")) {
+      right = clampNumber(action.right + dx, left + boundedMinWidth, window.innerWidth - margin);
+    }
+    if (action.corner.includes("t")) {
+      top = clampNumber(action.top + dy, margin, bottom - boundedMinHeight);
+    }
+    if (action.corner.includes("b")) {
+      bottom = clampNumber(action.bottom + dy, top + boundedMinHeight, window.innerHeight - margin);
+    }
+
+    panel.style.left = `${left}px`;
+    panel.style.top = `${top}px`;
+    panel.style.width = `${right - left}px`;
+    panel.style.height = `${bottom - top}px`;
+  });
+
+  document.addEventListener("mouseup", () => {
+    action = null;
+  });
+
+  window.addEventListener("resize", clampPanel);
+
+  return { setFloating, clampPanel };
+}
+
+createFloatingLegendController({
+  legend: markupLegendEl,
+  panel: markupLegendPanelEl,
+  floatButton: markupFloatBtn,
+  minWidth: 360,
+  minHeight: 240,
+  label: "Live Markup"
+});
+
+createFloatingLegendController({
+  legend: aiLegendEl,
+  panel: aiLegendPanelEl,
+  floatButton: aiFloatBtn,
+  minWidth: 320,
+  minHeight: 320,
+  label: "AI Draw"
+});
 
 markupLoadBtn.addEventListener("click", () => {
   const input = document.createElement("input");
