@@ -54,7 +54,8 @@ Blank start canvas mode:
 - Starts empty (no markup preloaded)
 - Canvas keeps a fixed `11:7` width-height ratio during resize
 - Use `Line` and `Circle` tools to draw on a real HTML canvas
-- In `Select` mode, click a detected object in a loaded background image to convert it into editable geometry; click elsewhere on the image to select the bitmap itself
+- In `Select` mode, detected point dots are ignored; click each detected line or circle in a loaded background image to convert it into editable geometry
+- Detected lines inside circles stay independently selectable, with endpoints snapped to nearby circle perimeters or intersecting lines
 - Use `Delete` or `Backspace` to remove a selected background image
 - Every new line auto-creates start/end `point` lines in markup
 - New line crossings with existing lines auto-create intersection `point` lines
@@ -65,6 +66,8 @@ Blank start canvas mode:
 - Circle crossings with line segments also create perimeter intersection points and split crossed lines
 - Circle-circle crossings also create perimeter intersection points
 - AI Draw is available from the top-bar `AI Draw` legend and can be floated, dragged, resized, or docked
+- AI Draw uses the OpenAI Responses API with validated structured markup, so invalid generations are rejected before the canvas changes
+- GPT-5.6 Terra is the recommended fast default; GPT-5.6 Sol remains available for maximum accuracy and Luna for the fastest economical generation
 - Markup is generated live in the top-bar `Live Markup` legend, where it can be edited, loaded, saved, floated, dragged, and resized
 
 Custom output path:

@@ -1352,6 +1352,27 @@ button.is-active .tool-icon svg {
 .ai-send-btn:active { transform: scale(0.97); }
 .ai-send-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
+.ai-send-btn.is-loading::before {
+  content: "";
+  display: inline-block;
+  width: 0.75rem;
+  height: 0.75rem;
+  margin-right: 0.45rem;
+  border: 2px solid rgba(255, 255, 255, 0.38);
+  border-top-color: #fff;
+  border-radius: 50%;
+  vertical-align: -0.12rem;
+  animation: ai-button-spin 700ms linear infinite;
+}
+
+@keyframes ai-button-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-send-btn.is-loading::before { animation: none; }
+}
+
 .ai-secondary-actions {
   display: flex;
 }

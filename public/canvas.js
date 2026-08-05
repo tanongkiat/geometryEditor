@@ -1656,10 +1656,6 @@ function projectDetectedObjectsToReference(extraction) {
     const center = mapPoint(circle.cx, circle.cy);
     return { type: "circle", cx: center.x, cy: center.y, r: circle.r * radiusScale };
   });
-  const points = (objects.points || []).map((point) => {
-    const mapped = mapPoint(point.x, point.y);
-    return { type: "point", x: mapped.x, y: mapped.y };
-  });
   const parabolas = (objects.parabolas || []).map((parabola) => {
     const vertex = mapPoint(parabola.vx, parabola.vy);
     const focus = mapPoint(parabola.fx, parabola.fy);
@@ -1673,7 +1669,7 @@ function projectDetectedObjectsToReference(extraction) {
   return {
     lines,
     circles,
-    points,
+    points: [],
     parabolas,
     labels,
     info: extraction.debugOverlay?.info || "background objects"
@@ -1686,25 +1682,20 @@ function findDetectedImageObjectAtPoint(point) {
     return null;
   }
 
-  const pointHit = (overlay.points || []).find((candidate) =>
-    !candidate.imported && Math.hypot(point.x - candidate.x, point.y - candidate.y) <= 12
-  );
-  if (pointHit) return pointHit;
-
   const labelHit = (overlay.labels || []).find((candidate) =>
     !candidate.imported && Math.hypot(point.x - candidate.x, point.y - candidate.y) <= 24
   );
   if (labelHit) return labelHit;
 
-  const circleHit = (overlay.circles || []).find((candidate) =>
-    !candidate.imported && Math.abs(Math.hypot(point.x - candidate.cx, point.y - candidate.cy) - candidate.r) <= 12
-  );
-  if (circleHit) return circleHit;
-
   const lineHit = (overlay.lines || []).find((candidate) =>
     !candidate.imported && distToSegment(point.x, point.y, candidate.x1, candidate.y1, candidate.x2, candidate.y2) <= 11
   );
   if (lineHit) return lineHit;
+
+  const circleHit = (overlay.circles || []).find((candidate) =>
+    !candidate.imported && Math.abs(Math.hypot(point.x - candidate.cx, point.y - candidate.cy) - candidate.r) <= 12
+  );
+  if (circleHit) return circleHit;
 
   return (overlay.parabolas || []).find((candidate) =>
     !candidate.imported && pointNearParabola(point, candidate, 12)
@@ -1712,7 +1703,7 @@ function findDetectedImageObjectAtPoint(point) {
 }
 
 function importDetectedImageObject(object) {
-  if (!object || object.imported) {
+  if (!object || object.imported || object.type === "point") {
     return false;
   }
 
@@ -1728,8 +1719,6 @@ function importDetectedImageObject(object) {
     );
   } else if (object.type === "circle") {
     addCircleCore(object.cx, object.cy, object.r, state.color);
-  } else if (object.type === "point") {
-    state.shapes.push({ type: "point", id, x: object.x, y: object.y, color: state.color });
   } else if (object.type === "parabola") {
     state.shapes.push({
       type: "parabola",
@@ -1764,7 +1753,9 @@ function importDetectedImageObject(object) {
   object.imported = true;
   removeDuplicatePointShapes();
   state.referenceImageSelected = false;
-  state.selection = new Set(state.shapes.filter((shape) => shapeBaseId(shape.id) === String(id)));
+  state.selection = new Set(state.shapes.filter((shape) =>
+    shape.type !== "point" && shapeBaseId(shape.id) === String(id)
+  ));
   state.equationEditMode = false;
   rebuildMarkup();
   updateEquationLegend();
@@ -1856,14 +1847,6 @@ function drawImageDebugOverlay() {
   }
 
   ctx.setLineDash([]);
-  for (const point of overlay.points || []) {
-    if (point.imported) continue;
-    ctx.fillStyle = "rgba(239, 68, 68, 0.9)";
-    ctx.beginPath();
-    ctx.arc(point.x, point.y, 2.8, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
   for (const parabola of overlay.parabolas || []) {
     if (parabola.imported) continue;
     ctx.strokeStyle = "rgba(16, 185, 129, 0.92)";
@@ -1886,7 +1869,7 @@ function drawImageDebugOverlay() {
   ctx.font = "600 10px Inter, sans-serif";
   const txt = overlay.info || "debug overlay";
   ctx.fillText(`Detector: ${txt}`, 18, 30);
-  ctx.fillText("Blue=line  Amber=circle  Red=point", 18, 44);
+  ctx.fillText("Blue=line  Amber=circle", 18, 44);
   ctx.restore();
 }
 
@@ -2177,10 +2160,12 @@ function distToSegment(px, py, x1, y1, x2, y2) {
   return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
 }
 
-function findShapeAtPoint(p) {
+function findShapeAtPoint(p, { includePoints = true } = {}) {
   const HIT_PT = 10, HIT_LINE = 7, HIT_LABEL = 22;
-  for (const s of state.shapes)
-    if (s.type === "point" && Math.hypot(p.x - s.x, p.y - s.y) <= HIT_PT) return s;
+  if (includePoints) {
+    for (const s of state.shapes)
+      if (s.type === "point" && Math.hypot(p.x - s.x, p.y - s.y) <= HIT_PT) return s;
+  }
   for (const s of state.shapes)
     if (s.type === "label" && Math.hypot(p.x - s.x, p.y - s.y) <= HIT_LABEL) return s;
   for (const s of state.shapes)
@@ -2314,6 +2299,10 @@ function applySelectClick(hit) {
     // level 4: everything
     selected = new Set(state.shapes);
     setStatus(`All ${selected.size} shapes selected.`);
+  }
+
+  if (state.referenceImage) {
+    selected = new Set(Array.from(selected).filter((shape) => shape.type !== "point"));
   }
 
   state.selection = selected;
@@ -3698,7 +3687,7 @@ canvas.addEventListener("mousedown", (event) => {
   const canvasPoint = toCanvasPoint(event);
 
   if (state.mode === "select") {
-    const hit = findShapeAtPoint(canvasPoint);
+    const hit = findShapeAtPoint(canvasPoint, { includePoints: !state.referenceImage });
     if (hit) {
       applySelectClick(hit);
     } else if (importDetectedImageObject(findDetectedImageObjectAtPoint(canvasPoint))) {
@@ -4877,6 +4866,372 @@ function inferLinesFromMask(mask, width, height) {
   return lines.filter((line) => traceLine(line.x1, line.y1, line.x2, line.y2) >= 0.7);
 }
 
+function buildLineDetectionMask(mask, width, height, textBoxes) {
+  const lineMask = mask.slice();
+  for (const box of textBoxes || []) {
+    const minX = Math.max(0, Math.floor(box.minX) - 2);
+    const minY = Math.max(0, Math.floor(box.minY) - 2);
+    const maxX = Math.min(width - 1, Math.ceil(box.maxX) + 2);
+    const maxY = Math.min(height - 1, Math.ceil(box.maxY) + 2);
+    for (let y = minY; y <= maxY; y += 1) {
+      for (let x = minX; x <= maxX; x += 1) {
+        lineMask[y * width + x] = 0;
+      }
+    }
+  }
+  return lineMask;
+}
+
+function detectedLineLength(line) {
+  return Math.hypot(line.x2 - line.x1, line.y2 - line.y1);
+}
+
+function canonicalDetectedLine(line) {
+  let x1 = line.x1;
+  let y1 = line.y1;
+  let x2 = line.x2;
+  let y2 = line.y2;
+  let dx = x2 - x1;
+  let dy = y2 - y1;
+  if (dx < 0 || (Math.abs(dx) < 1e-6 && dy < 0)) {
+    [x1, x2] = [x2, x1];
+    [y1, y2] = [y2, y1];
+    dx = -dx;
+    dy = -dy;
+  }
+  const length = Math.max(1e-6, Math.hypot(dx, dy));
+  return {
+    ...line,
+    x1,
+    y1,
+    x2,
+    y2,
+    ux: dx / length,
+    uy: dy / length,
+    length
+  };
+}
+
+function mergeCollinearDetectedLines(lines) {
+  const candidates = (lines || [])
+    .filter((line) => detectedLineLength(line) >= 12)
+    .map(canonicalDetectedLine)
+    .sort((a, b) => (b.score || 1) - (a.score || 1) || b.length - a.length);
+  const merged = [];
+  const parallelThreshold = Math.cos(5.5 * Math.PI / 180);
+
+  for (const candidate of candidates) {
+    let target = null;
+    for (const existing of merged) {
+      const directionSimilarity = Math.abs(candidate.ux * existing.ux + candidate.uy * existing.uy);
+      if (directionSimilarity < parallelThreshold) {
+        continue;
+      }
+
+      const nx = -existing.uy;
+      const ny = existing.ux;
+      const candidateMidX = (candidate.x1 + candidate.x2) / 2;
+      const candidateMidY = (candidate.y1 + candidate.y2) / 2;
+      const perpendicularDistance = Math.abs(
+        (candidateMidX - existing.x1) * nx + (candidateMidY - existing.y1) * ny
+      );
+      if (perpendicularDistance > 6) {
+        continue;
+      }
+
+      const project = (x, y) =>
+        (x - existing.x1) * existing.ux + (y - existing.y1) * existing.uy;
+      const candidateT1 = project(candidate.x1, candidate.y1);
+      const candidateT2 = project(candidate.x2, candidate.y2);
+      const candidateMin = Math.min(candidateT1, candidateT2);
+      const candidateMax = Math.max(candidateT1, candidateT2);
+      const gap = Math.max(candidateMin - existing.length, -candidateMax, 0);
+      if (gap > 9) {
+        continue;
+      }
+
+      target = existing;
+      break;
+    }
+
+    if (!target) {
+      merged.push({ ...candidate });
+      continue;
+    }
+
+    const points = [
+      { x: target.x1, y: target.y1 },
+      { x: target.x2, y: target.y2 },
+      { x: candidate.x1, y: candidate.y1 },
+      { x: candidate.x2, y: candidate.y2 }
+    ];
+    const projections = points.map((point) => ({
+      point,
+      t: (point.x - target.x1) * target.ux + (point.y - target.y1) * target.uy
+    }));
+    projections.sort((a, b) => a.t - b.t);
+    const start = {
+      x: target.x1 + target.ux * projections[0].t,
+      y: target.y1 + target.uy * projections[0].t
+    };
+    const end = {
+      x: target.x1 + target.ux * projections[projections.length - 1].t,
+      y: target.y1 + target.uy * projections[projections.length - 1].t
+    };
+    const replacement = canonicalDetectedLine({
+      x1: start.x,
+      y1: start.y,
+      x2: end.x,
+      y2: end.y,
+      score: Math.max(target.score || 0, candidate.score || 0)
+    });
+    Object.assign(target, replacement);
+  }
+
+  const cleaned = [];
+  merged.sort((a, b) => b.length - a.length);
+  for (const line of merged) {
+    const coveredByLongerLine = cleaned.some((existing) =>
+      distToSegment(line.x1, line.y1, existing.x1, existing.y1, existing.x2, existing.y2) <= 9 &&
+      distToSegment(line.x2, line.y2, existing.x1, existing.y1, existing.x2, existing.y2) <= 9
+    );
+    if (!coveredByLongerLine) {
+      cleaned.push(line);
+    }
+  }
+
+  return cleaned.map(({ ux, uy, length, ...line }) => line);
+}
+
+function inferLinesInsideCircles(mask, width, height, circles) {
+  const candidates = [];
+  const hasInkNear = (x, y, nx, ny) => {
+    for (let offset = -1; offset <= 1; offset += 1) {
+      const px = Math.round(x + nx * offset);
+      const py = Math.round(y + ny * offset);
+      if (px >= 0 && py >= 0 && px < width && py < height && mask[py * width + px]) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  for (const circle of circles || []) {
+    if (!Number.isFinite(circle.r) || circle.r < 18) {
+      continue;
+    }
+
+    const angleSteps = 72;
+    const offsetStep = Math.max(2, Math.min(3, circle.r / 40));
+    const perimeterInset = Math.max(4, Math.min(8, circle.r * 0.035));
+    const minimumRunLength = Math.max(22, Math.min(60, circle.r * 0.3));
+
+    for (let angleIndex = 0; angleIndex < angleSteps; angleIndex += 1) {
+      const angle = angleIndex * Math.PI / angleSteps;
+      const ux = Math.cos(angle);
+      const uy = Math.sin(angle);
+      const nx = -uy;
+      const ny = ux;
+
+      for (let offset = -circle.r * 0.92; offset <= circle.r * 0.92; offset += offsetStep) {
+        const halfChord = Math.sqrt(Math.max(0, circle.r * circle.r - offset * offset));
+        const innerHalf = halfChord - perimeterInset;
+        if (innerHalf < minimumRunLength / 2) {
+          continue;
+        }
+
+        const centerX = circle.cx + nx * offset;
+        const centerY = circle.cy + ny * offset;
+        const sampleStep = 2;
+        const sampleCount = Math.max(2, Math.floor((innerHalf * 2) / sampleStep));
+        const maxGapSamples = 1;
+        let runStart = -1;
+        let lastHit = -1;
+        let hitCount = 0;
+
+        const finishRun = () => {
+          if (runStart < 0 || lastHit < runStart) {
+            return;
+          }
+          const spanSamples = lastHit - runStart + 1;
+          const spanLength = (lastHit - runStart) * sampleStep;
+          const support = hitCount / spanSamples;
+          if (spanLength < minimumRunLength || support < 0.82) {
+            return;
+          }
+
+          let startT = -innerHalf + runStart * sampleStep;
+          let endT = -innerHalf + lastHit * sampleStep;
+          if (startT + halfChord <= perimeterInset + sampleStep * 2) {
+            startT = -halfChord;
+          }
+          if (halfChord - endT <= perimeterInset + sampleStep * 2) {
+            endT = halfChord;
+          }
+          candidates.push({
+            x1: centerX + ux * startT,
+            y1: centerY + uy * startT,
+            x2: centerX + ux * endT,
+            y2: centerY + uy * endT,
+            score: Math.pow(support, 8) + Math.min(1, spanLength / (circle.r * 1.4)) * 0.35
+          });
+        };
+
+        for (let sampleIndex = 0; sampleIndex <= sampleCount; sampleIndex += 1) {
+          const t = -innerHalf + sampleIndex * sampleStep;
+          const hit = hasInkNear(centerX + ux * t, centerY + uy * t, nx, ny);
+          if (hit) {
+            if (runStart < 0) {
+              runStart = sampleIndex;
+              hitCount = 0;
+            }
+            lastHit = sampleIndex;
+            hitCount += 1;
+          } else if (runStart >= 0 && sampleIndex - lastHit > maxGapSamples) {
+            finishRun();
+            runStart = -1;
+            lastHit = -1;
+            hitCount = 0;
+          }
+        }
+        finishRun();
+      }
+    }
+  }
+
+  return mergeCollinearDetectedLines(candidates);
+}
+
+function infiniteDetectedLineIntersection(first, second) {
+  const ax = first.x2 - first.x1;
+  const ay = first.y2 - first.y1;
+  const bx = second.x2 - second.x1;
+  const by = second.y2 - second.y1;
+  const denominator = cross(ax, ay, bx, by);
+  if (Math.abs(denominator) < 1e-6) {
+    return null;
+  }
+  const dx = second.x1 - first.x1;
+  const dy = second.y1 - first.y1;
+  const t = cross(dx, dy, bx, by) / denominator;
+  return { x: first.x1 + ax * t, y: first.y1 + ay * t };
+}
+
+function detectedLineCircleIntersections(line, circle) {
+  const normalized = canonicalDetectedLine(line);
+  const toCenterX = circle.cx - normalized.x1;
+  const toCenterY = circle.cy - normalized.y1;
+  const centerT = toCenterX * normalized.ux + toCenterY * normalized.uy;
+  const closestX = normalized.x1 + normalized.ux * centerT;
+  const closestY = normalized.y1 + normalized.uy * centerT;
+  const perpendicularDistance = Math.hypot(circle.cx - closestX, circle.cy - closestY);
+  if (perpendicularDistance > circle.r + 1) {
+    return [];
+  }
+  const halfSpan = Math.sqrt(Math.max(0, circle.r * circle.r - perpendicularDistance * perpendicularDistance));
+  return [centerT - halfSpan, centerT + halfSpan].map((t) => ({
+    x: normalized.x1 + normalized.ux * t,
+    y: normalized.y1 + normalized.uy * t
+  }));
+}
+
+function resolveDetectedLineEndpoints(lines, circles) {
+  const merged = mergeCollinearDetectedLines(lines);
+  const resolved = merged.map((line, lineIndex) => {
+    const length = detectedLineLength(line);
+    const snapTolerance = Math.max(8, Math.min(24, length * 0.18));
+    const anchors = [];
+
+    for (const circle of circles || []) {
+      anchors.push(...detectedLineCircleIntersections(line, circle));
+    }
+
+    for (let otherIndex = 0; otherIndex < merged.length; otherIndex += 1) {
+      if (otherIndex === lineIndex) {
+        continue;
+      }
+      const other = merged[otherIndex];
+      const hit = infiniteDetectedLineIntersection(line, other);
+      if (hit && distToSegment(hit.x, hit.y, other.x1, other.y1, other.x2, other.y2) <= snapTolerance) {
+        anchors.push(hit);
+      }
+    }
+
+    const snapEndpoint = (endpoint) => {
+      let best = endpoint;
+      let bestDistance = snapTolerance;
+      for (const anchor of anchors) {
+        const anchorDistance = Math.hypot(anchor.x - endpoint.x, anchor.y - endpoint.y);
+        if (anchorDistance <= bestDistance) {
+          bestDistance = anchorDistance;
+          best = anchor;
+        }
+      }
+      return best;
+    };
+
+    const start = snapEndpoint({ x: line.x1, y: line.y1 });
+    const end = snapEndpoint({ x: line.x2, y: line.y2 });
+    if (Math.hypot(end.x - start.x, end.y - start.y) < 8) {
+      return line;
+    }
+    return {
+      x1: Math.round(start.x),
+      y1: Math.round(start.y),
+      x2: Math.round(end.x),
+      y2: Math.round(end.y)
+    };
+  });
+
+  const deduplicated = [];
+  const directionThreshold = Math.cos(18 * Math.PI / 180);
+  for (const candidate of resolved.sort((a, b) => detectedLineLength(b) - detectedLineLength(a))) {
+    const normalizedCandidate = canonicalDetectedLine(candidate);
+    let duplicate = null;
+    let reverse = false;
+    for (const existing of deduplicated) {
+      const normalizedExisting = canonicalDetectedLine(existing);
+      const directionSimilarity = Math.abs(
+        normalizedCandidate.ux * normalizedExisting.ux + normalizedCandidate.uy * normalizedExisting.uy
+      );
+      if (directionSimilarity < directionThreshold) {
+        continue;
+      }
+      const directDistance = Math.max(
+        Math.hypot(candidate.x1 - existing.x1, candidate.y1 - existing.y1),
+        Math.hypot(candidate.x2 - existing.x2, candidate.y2 - existing.y2)
+      );
+      const reverseDistance = Math.max(
+        Math.hypot(candidate.x1 - existing.x2, candidate.y1 - existing.y2),
+        Math.hypot(candidate.x2 - existing.x1, candidate.y2 - existing.y1)
+      );
+      if (Math.min(directDistance, reverseDistance) <= 15) {
+        duplicate = existing;
+        reverse = reverseDistance < directDistance;
+        break;
+      }
+    }
+
+    if (!duplicate) {
+      deduplicated.push({ ...candidate });
+      continue;
+    }
+
+    const candidateStart = reverse
+      ? { x: candidate.x2, y: candidate.y2 }
+      : { x: candidate.x1, y: candidate.y1 };
+    const candidateEnd = reverse
+      ? { x: candidate.x1, y: candidate.y1 }
+      : { x: candidate.x2, y: candidate.y2 };
+    duplicate.x1 = Math.round((duplicate.x1 + candidateStart.x) / 2);
+    duplicate.y1 = Math.round((duplicate.y1 + candidateStart.y) / 2);
+    duplicate.x2 = Math.round((duplicate.x2 + candidateEnd.x) / 2);
+    duplicate.y2 = Math.round((duplicate.y2 + candidateEnd.y) / 2);
+  }
+
+  return deduplicated;
+}
+
 function buildImageToMathTransform({ detectWidth, detectHeight, foregroundMaxAbsX, foregroundMaxAbsY }) {
   const visibleHalfX = state.logicalWidth / (2 * state.gridUnit);
   const visibleHalfY = state.logicalHeight / (2 * state.gridUnit);
@@ -5158,14 +5513,41 @@ async function extractGeometryFromImagePayload(payload) {
   const pointPrimitives = primitives
     .filter((primitive) => primitive.kind === "point")
     .map((primitive) => ({ x: primitive.data.x, y: primitive.data.y }));
+  const lineDetectionMask = buildLineDetectionMask(denoised, detectWidth, detectHeight, textBoxes);
 
-  const inferredLines = inferLinesBetweenPointCandidates(pointPrimitives, denoised, detectWidth, detectHeight);
+  const inferredLines = inferLinesBetweenPointCandidates(pointPrimitives, lineDetectionMask, detectWidth, detectHeight);
   for (const line of inferredLines) {
     primitives.push({ kind: "line", data: line });
   }
 
-  const scanLines = inferLinesFromMask(denoised, detectWidth, detectHeight);
+  const scanLines = inferLinesFromMask(lineDetectionMask, detectWidth, detectHeight);
   for (const line of scanLines) {
+    primitives.push({ kind: "line", data: line });
+  }
+
+  const detectedCircleData = primitives
+    .filter((primitive) => primitive.kind === "circle")
+    .map((primitive) => ({ ...primitive.data }));
+  const circleInteriorLines = inferLinesInsideCircles(
+    lineDetectionMask,
+    detectWidth,
+    detectHeight,
+    detectedCircleData
+  );
+  for (const line of circleInteriorLines) {
+    primitives.push({ kind: "line", data: line });
+  }
+
+  const resolvedLineData = resolveDetectedLineEndpoints(
+    primitives.filter((primitive) => primitive.kind === "line").map((primitive) => primitive.data),
+    detectedCircleData
+  );
+  for (let index = primitives.length - 1; index >= 0; index -= 1) {
+    if (primitives[index].kind === "line") {
+      primitives.splice(index, 1);
+    }
+  }
+  for (const line of resolvedLineData) {
     primitives.push({ kind: "line", data: line });
   }
 
@@ -5200,12 +5582,6 @@ async function extractGeometryFromImagePayload(payload) {
 
   for (const primitive of primitives) {
     if (primitive.kind === "point") {
-      const mathPoint = transform.detectToMathPoint({ x: primitive.data.x, y: primitive.data.y });
-      const canvasPoint = mathToCanvasPoint(mathPoint);
-      result.points.push({
-        x: canvasPoint.x,
-        y: canvasPoint.y
-      });
       continue;
     }
 
@@ -5283,7 +5659,7 @@ async function extractGeometryFromImagePayload(payload) {
   result.debugOverlay = {
     lines: result.lines.map((line) => ({ ...line })),
     circles: result.circles.map((circle) => ({ ...circle })),
-    points: result.points.map((point) => ({ ...point })),
+    points: [],
     parabolas: result.parabolas.map((parabola) => ({ ...parabola })),
     info: `${components.length} comp, ${primitives.length} prim, th=${threshold}, span=(${Math.round(primitiveBounds.maxAbsX)},${Math.round(primitiveBounds.maxAbsY)})`
   };
@@ -5309,9 +5685,7 @@ async function extractGeometryFromImagePayload(payload) {
     height: drawHeight
   };
   result.detectionObjects = {
-    points: primitives
-      .filter((primitive) => primitive.kind === "point")
-      .map((primitive) => ({ ...primitive.data })),
+    points: [],
     lines: primitives
       .filter((primitive) => primitive.kind === "line")
       .map((primitive) => ({ ...primitive.data })),
@@ -5415,35 +5789,67 @@ async function loadAiModels() {
 }
 
 async function runAiDraw() {
+  if (aiSendBtn.disabled) {
+    return;
+  }
+
   const prompt = aiPromptEl.value.trim();
   const hasImage = Boolean(aiImagePayload?.dataUrl);
   if (!prompt && !hasImage) {
     setAiStatus("Enter a description or choose a reference image first.", "error");
     return;
   }
-  const model = aiModelSelectEl?.value || "gpt-4o-mini";
+  const model = aiModelSelectEl?.value || "gpt-5.6-terra";
+  const append = Boolean(aiAppendEl.checked);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 125000);
+  let applying = false;
+  let previousShapes = null;
   aiSendBtn.disabled = true;
-  setAiStatus("Generating…");
+  aiSendBtn.classList.add("is-loading");
+  aiSendBtn.setAttribute("aria-busy", "true");
+  aiSendBtn.textContent = "Generating…";
+  setAiStatus(hasImage ? "Analyzing image and generating editable geometry…" : "Generating editable geometry…");
   try {
     const res = await fetch("/api/ai-markup", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
       body: JSON.stringify({
         prompt,
         gridUnit: state.gridUnit,
         model,
-        imageDataUrl: aiImagePayload?.dataUrl || ""
+        imageDataUrl: aiImagePayload?.dataUrl || "",
+        append,
+        existingMarkup: markupOutput.value
       })
     });
-    const data = await res.json();
+    const responseText = await res.text();
+    let data;
+    try {
+      data = responseText ? JSON.parse(responseText) : {};
+    } catch (error) {
+      throw new Error(`Server returned an invalid response (${res.status}).`);
+    }
     if (!res.ok || data.error) throw new Error(data.error || "Server error");
+    if (typeof data.markup !== "string" || !data.markup.trim()) {
+      throw new Error("The model returned no drawable geometry.");
+    }
 
-    // strip any markdown code fences the model might add
     const clean = data.markup.replace(/```[^\n]*\n?/g, "").trim();
-    const incoming = clean.split("\n").map(parseMarkupLine).filter(Boolean);
+    const cleanLines = clean.split(/\r?\n/).filter((line) => line.trim() && !line.trim().startsWith("#"));
+    const incoming = cleanLines.map(parseMarkupLine);
+    if (!incoming.length || incoming.some((shape) => !shape)) {
+      throw new Error("The generated markup contains an unsupported or invalid shape.");
+    }
 
+    previousShapes = cloneShapes(state.shapes);
     pushUndoSnapshot();
-    if (!aiAppendEl.checked) state.shapes = [];
+    applying = true;
+    if (!append) {
+      state.shapes = [];
+      state.selection.clear();
+    }
 
     for (const shape of incoming) {
       if (shape.type === "line") {
@@ -5452,22 +5858,45 @@ async function runAiDraw() {
         addCircleCore(shape.cx, shape.cy, shape.r, shape.color);
       } else if (shape.type === "point") {
         if (!hasPointShape(shape)) {
-          state.shapes.push(shape);
+          state.shapes.push({ ...shape, id: getNextId() });
         }
       } else if (shape.type === "parabola") {
-        state.shapes.push(shape);
+        state.shapes.push({ ...shape, id: getNextId() });
       } else if (shape.type === "label") {
-        state.shapes.push(shape);
+        state.shapes.push({ ...shape, id: getNextId() });
       }
     }
 
+    removeDuplicatePointShapes();
+    state.selection.clear();
+    state.angleAnalysis = null;
     markupOutput.value = state.shapes.map(shapeToMarkup).filter(Boolean).join("\n");
+    updateEquationLegend();
+    updateMarkupHighlight([]);
     render();
-    setAiStatus(`Done — ${clean.split("\n").filter(Boolean).length} shape(s) added.`, "ok");
+    const modelName = data.model || model;
+    const summary = typeof data.summary === "string" && data.summary.trim()
+      ? ` ${data.summary.trim()}`
+      : "";
+    setAiStatus(`Done — ${incoming.length} generated shape${incoming.length === 1 ? "" : "s"} applied with ${modelName}.${summary}`, "ok");
   } catch (err) {
-    setAiStatus(`Error: ${err.message}`, "error");
+    if (applying && previousShapes) {
+      state.shapes = previousShapes;
+      state.actions.pop();
+      markupOutput.value = state.shapes.map(shapeToMarkup).filter(Boolean).join("\n");
+      updateEquationLegend();
+      render();
+    }
+    const message = err.name === "AbortError"
+      ? "Generation timed out. Try a shorter prompt, a smaller image, or the Terra model."
+      : err.message;
+    setAiStatus(`Error: ${message}`, "error");
   } finally {
+    clearTimeout(timeout);
     aiSendBtn.disabled = false;
+    aiSendBtn.classList.remove("is-loading");
+    aiSendBtn.removeAttribute("aria-busy");
+    aiSendBtn.textContent = "Generate";
   }
 }
 
@@ -5510,7 +5939,7 @@ async function useImageOnlyOnCanvas() {
       state.imageCirclePick = extraction.circlePickContext;
       state.imageDebugOverlay = projectDetectedObjectsToReference(extraction);
       if (state.imageDebugOverlay) {
-        detectedCount = ["lines", "circles", "points", "parabolas", "labels"]
+        detectedCount = ["lines", "circles", "parabolas", "labels"]
           .reduce((count, key) => count + (state.imageDebugOverlay[key]?.length || 0), 0);
       }
     } catch (detectionError) {

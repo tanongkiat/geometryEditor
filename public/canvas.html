@@ -86,8 +86,9 @@
               <label class="ai-model-label" for="aiModelSelect">
                 <span class="ai-control-title">Model</span>
                 <select id="aiModelSelect" class="ai-model-select" aria-label="Select AI model">
-                  <option value="gpt-4o-mini">GPT-4o mini</option>
-                  <option value="gpt-4o">GPT-4o</option>
+                  <option value="gpt-5.6-terra">GPT-5.6 Terra - Recommended, fast and accurate</option>
+                  <option value="gpt-5.6-sol">GPT-5.6 Sol - Maximum accuracy, slower</option>
+                  <option value="gpt-5.6-luna">GPT-5.6 Luna - Fast and economical</option>
                 </select>
               </label>
             </div>
@@ -115,7 +116,7 @@
               <input type="checkbox" id="aiDebugOverlay" checked />
               Show detection debug overlay
             </label>
-            <div id="aiStatus" class="ai-status"></div>
+            <div id="aiStatus" class="ai-status" role="status" aria-live="polite"></div>
             <div class="ai-secondary-actions">
               <button id="aiRemoveImageBtn" type="button" class="ai-image-canvas-btn">Remove Background Image</button>
             </div>
