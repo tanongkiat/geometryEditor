@@ -7,6 +7,7 @@ const lineBtn = document.getElementById("lineBtn");
 const circleBtn = document.getElementById("circleBtn");
 const labelBtn = document.getElementById("labelBtn");
 const angleBtn = document.getElementById("angleBtn");
+const deleteBtn = document.getElementById("deleteBtn");
 const undoBtn = document.getElementById("undoBtn");
 const clearBtn = document.getElementById("clearBtn");
 const copyBtn = document.getElementById("copyBtn");
@@ -36,7 +37,12 @@ const state = {
   snapRadius: 14,
   snapKindFilter: "any",
   gridUnit: 50,
-  markupFocused: false
+  markupFocused: false,
+  showGrid: true,
+  snapToGrid: false,
+  selection: new Set(),  // Set of shape objects; multi-click expands level
+  anglePrecision: 0,
+  showArcDiffs: false
 };
 
 function resizeCanvasToFit() {
@@ -175,12 +181,14 @@ function setMode(mode) {
   state.angleAnalysis = null;
   state.hoverPoint = null;
   state.isDragging = false;
+  if (mode !== "select") state.selection.clear();
 
   selectBtn.classList.toggle("is-active", mode === "select");
   lineBtn.classList.toggle("is-active", mode === "line");
   circleBtn.classList.toggle("is-active", mode === "circle");
   labelBtn.classList.toggle("is-active", mode === "label");
   angleBtn.classList.toggle("is-active", mode === "angle");
+  deleteBtn.classList.toggle("is-active", mode === "delete");
 
   if (mode === "line") {
     setSnapInfo(snapInfoText("target: none"));
@@ -203,6 +211,12 @@ function setMode(mode) {
   if (mode === "angle") {
     setSnapInfo(snapInfoText("line mode only"));
     setStatus("Angle mode: click a point to calculate each connected ray angle to +X axis.");
+    return;
+  }
+
+  if (mode === "delete") {
+    setSnapInfo(snapInfoText("line mode only"));
+    setStatus("Delete mode: click a point to remove it with its connected lines. Circle centre removes the circle.");
     return;
   }
 
@@ -301,52 +315,61 @@ function parseMarkupLine(raw) {
 }
 
 function rebuildMarkup() {
-  if (state.markupFocused) return; // don't overwrite while user is typing
+  if (state.markupFocused) return;
   markupOutput.value = state.shapes.map(shapeToMarkup).filter(Boolean).join("\n");
+  if (state.mode !== "select") updateMarkupHighlight([]);
 }
 
 function clearCanvas() {
   ctx.clearRect(0, 0, state.logicalWidth, state.logicalHeight);
 }
 
-function drawGrid() {
+function drawGridLines() {
   const W = state.logicalWidth;
   const H = state.logicalHeight;
-  const unit = state.gridUnit;          // pixels per 1 unit
-  const ox = Math.round(W / 2);        // origin X (canvas centre)
-  const oy = Math.round(H / 2);        // origin Y (canvas centre)
+  const unit = state.gridUnit;
+  const ox = Math.round(W / 2);
+  const oy = Math.round(H / 2);
+
+  ctx.save();
+  ctx.strokeStyle = "rgba(0, 0, 0, 0.2)";
+  ctx.lineWidth = 1;
+
+  for (let x = ox % unit; x <= W; x += unit) {
+    if (x === ox) continue; // axis drawn by drawAxes
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
+  }
+  for (let y = oy % unit; y <= H; y += unit) {
+    if (y === oy) continue;
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawAxes() {
+  const W = state.logicalWidth;
+  const H = state.logicalHeight;
+  const unit = state.gridUnit;
+  const ox = Math.round(W / 2);
+  const oy = Math.round(H / 2);
 
   ctx.save();
   ctx.font = "500 10px Inter, sans-serif";
   ctx.textBaseline = "middle";
 
-  // ── minor grid lines (every unit) ──
-  ctx.strokeStyle = "rgba(12, 88, 82, 0.07)";
-  ctx.lineWidth = 0.75;
-  for (let x = ox % unit; x <= W; x += unit) {
-    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke();
-  }
-  for (let y = oy % unit; y <= H; y += unit) {
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
-  }
-
   // ── axes ──
   ctx.strokeStyle = "rgba(12, 88, 82, 0.45)";
   ctx.lineWidth = 1.5;
-  // X axis
   ctx.beginPath(); ctx.moveTo(0, oy); ctx.lineTo(W, oy); ctx.stroke();
-  // Y axis
   ctx.beginPath(); ctx.moveTo(ox, 0); ctx.lineTo(ox, H); ctx.stroke();
 
   // ── tick marks + numeric labels ──
   ctx.fillStyle = "rgba(12, 88, 82, 0.55)";
   ctx.strokeStyle = "rgba(12, 88, 82, 0.45)";
   ctx.lineWidth = 1;
-
   const tickLen = 5;
   const labelOffset = 14;
 
-  // X-axis ticks
   ctx.textAlign = "center";
   for (let px = ox + unit; px <= W; px += unit) {
     const val = Math.round((px - ox) / unit);
@@ -359,7 +382,6 @@ function drawGrid() {
     ctx.fillText(String(val), px, oy + labelOffset);
   }
 
-  // Y-axis ticks (canvas Y is flipped: up = negative canvas-y)
   ctx.textAlign = "right";
   for (let py = oy - unit; py >= 0; py -= unit) {
     const val = Math.round((oy - py) / unit);
@@ -386,6 +408,31 @@ function drawGrid() {
 }
 
 function drawShapes() {
+  // selection glow pass — drawn first so it appears behind shapes
+  if (state.selection.size > 0) {
+    for (const shape of state.shapes) {
+      if (!state.selection.has(shape)) continue;
+      ctx.save();
+      ctx.strokeStyle = "#22d3ee";
+      ctx.fillStyle  = "#22d3ee";
+      ctx.globalAlpha = 0.35;
+      if (shape.type === "line") {
+        ctx.lineWidth = 9;
+        ctx.beginPath(); ctx.moveTo(shape.x1, shape.y1); ctx.lineTo(shape.x2, shape.y2); ctx.stroke();
+      } else if (shape.type === "circle") {
+        ctx.lineWidth = 9;
+        ctx.beginPath(); ctx.arc(shape.cx, shape.cy, shape.r, 0, Math.PI * 2); ctx.stroke();
+      } else if (shape.type === "point") {
+        ctx.beginPath(); ctx.arc(shape.x, shape.y, 10, 0, Math.PI * 2); ctx.fill();
+      } else if (shape.type === "label") {
+        ctx.font = "600 16px Inter, sans-serif";
+        const w = ctx.measureText(String(shape.text || "Label")).width;
+        ctx.fillRect(shape.x - 3, shape.y - 11, w + 6, 18);
+      }
+      ctx.restore();
+    }
+  }
+
   for (const shape of state.shapes) {
     ctx.save();
     ctx.strokeStyle = shape.color;
@@ -459,6 +506,52 @@ function drawSnapIndicator() {
   ctx.restore();
 }
 
+function drawArcDiffs(anchor, rays) {
+  if (rays.length < 2) return;
+  const n = rays.length;
+  const DEG = Math.PI / 180;
+  ctx.save();
+
+  for (let i = 0; i < n; i++) {
+    const r1 = rays[i];
+    const r2 = rays[(i + 1) % n];
+    const θ1 = r1.angle;
+    // for the wrap-around gap compute the arc going CCW past 360
+    const rawθ2 = i < n - 1 ? r2.angle : r2.angle + 360;
+    const diff = rawθ2 - θ1;
+    const midθ = θ1 + diff / 2;
+
+    const d1 = Math.hypot(r1.to.x - anchor.x, r1.to.y - anchor.y);
+    const d2 = Math.hypot(r2.to.x - anchor.x, r2.to.y - anchor.y);
+    const arcR = Math.max(28, Math.min(d1, d2) * 0.28);
+
+    // arc CCW from θ1 to rawθ2 (canvas: negate angles, counterclockwise=true)
+    ctx.beginPath();
+    ctx.arc(anchor.x, anchor.y, arcR, -θ1 * DEG, -rawθ2 * DEG, true);
+    ctx.strokeStyle = "#a78bfa";
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([4, 3]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // label at arc midpoint
+    const lx = anchor.x + (arcR + 16) * Math.cos(midθ * DEG);
+    const ly = anchor.y - (arcR + 16) * Math.sin(midθ * DEG);
+    const label = `${Number(diff.toFixed(state.anglePrecision)) % 360}°`;
+    ctx.font = "600 11px Inter, sans-serif";
+    const tw = ctx.measureText(label).width;
+    ctx.fillStyle = "rgba(88, 28, 180, 0.82)";
+    ctx.beginPath();
+    ctx.roundRect(lx - tw / 2 - 4, ly - 9, tw + 8, 17, 3);
+    ctx.fill();
+    ctx.fillStyle = "#f5f3ff";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, lx, ly);
+  }
+  ctx.restore();
+}
+
 function drawAngleAnalysisOverlay() {
   if (!state.angleAnalysis) {
     return;
@@ -496,28 +589,55 @@ function drawAngleAnalysisOverlay() {
   ctx.beginPath();
   ctx.arc(anchor.x, anchor.y, 3, 0, Math.PI * 2);
   ctx.fill();
+  if (state.showArcDiffs) drawArcDiffs(anchor, rays);
+  ctx.restore();
+}
+
+function drawCoordHover(canvasPoint) {
+  const ox = Math.round(state.logicalWidth / 2);
+  const oy = Math.round(state.logicalHeight / 2);
+  const mx = parseFloat(((canvasPoint.x - ox) / state.gridUnit).toFixed(2));
+  const my = parseFloat(((oy - canvasPoint.y) / state.gridUnit).toFixed(2));
+  const label = `(${mx}, ${my})`;
+  const px = canvasPoint.x + 14;
+  const py = canvasPoint.y - 10;
+  ctx.save();
+  ctx.font = "500 11px Inter, monospace";
+  const w = ctx.measureText(label).width;
+  ctx.fillStyle = "rgba(15, 23, 42, 0.72)";
+  ctx.beginPath();
+  ctx.roundRect(px - 4, py - 13, w + 10, 18, 4);
+  ctx.fill();
+  ctx.fillStyle = "#e2e8f0";
+  ctx.textAlign = "left";
+  ctx.textBaseline = "middle";
+  ctx.fillText(label, px + 1, py - 4);
   ctx.restore();
 }
 
 function render(mousePoint = null) {
   clearCanvas();
-  drawGrid();
+  if (state.showGrid) drawGridLines();
+  drawAxes();
   drawShapes();
   drawAngleAnalysisOverlay();
   drawSnapIndicator();
   if (mousePoint && state.isDragging) {
     drawDraft(mousePoint);
   }
+  if (state.showGrid && mousePoint) {
+    drawCoordHover(mousePoint);
+  }
 }
 
 function angleFromXAxisDegrees(from, to) {
   const dx = to.x - from.x;
   const dy = to.y - from.y;
-  let angle = (Math.atan2(dy, dx) * 180) / Math.PI;
+  let angle = (Math.atan2(-dy, dx) * 180) / Math.PI;
   if (angle < 0) {
     angle += 360;
   }
-  return Number(angle.toFixed(3));
+  return Number(angle.toFixed(state.anglePrecision)) % 360;
 }
 
 function findNearestExistingPoint(point, radius) {
@@ -601,6 +721,68 @@ function analyzePointAnglesAt(rawPoint) {
   setStatus(`Angles to +X at point (${anchor.x}, ${anchor.y}): ${values}`);
 }
 
+function deleteAtPoint(rawPoint) {
+  const target = findNearestExistingPoint(rawPoint, 14);
+
+  // check if click is on a circle perimeter or label when no point is near
+  if (!target) {
+    const HIT = 10;
+    const hitCircle = state.shapes.find((s) => {
+      if (s.type !== "circle") return false;
+      const d = Math.sqrt((rawPoint.x - s.cx) ** 2 + (rawPoint.y - s.cy) ** 2);
+      return Math.abs(d - s.r) <= HIT;
+    });
+    if (hitCircle) {
+      pushUndoSnapshot();
+      state.shapes = state.shapes.filter((s) => {
+        if (s === hitCircle) return false;
+        // remove the centre point that belongs to this circle
+        if (s.type === "point" && pointMatches({ x: s.x, y: s.y }, { x: hitCircle.cx, y: hitCircle.cy })) return false;
+        return true;
+      });
+      rebuildMarkup();
+      markupOutput.value = state.shapes.map(shapeToMarkup).filter(Boolean).join("\n");
+      render();
+      setStatus(`Deleted circle id=${hitCircle.id}.`);
+      return;
+    }
+    const hitLabel = state.shapes.find((s) => {
+      if (s.type !== "label") return false;
+      return Math.sqrt((rawPoint.x - s.x) ** 2 + (rawPoint.y - s.y) ** 2) <= 20;
+    });
+    if (hitLabel) {
+      pushUndoSnapshot();
+      state.shapes = state.shapes.filter((s) => s !== hitLabel);
+      rebuildMarkup();
+      markupOutput.value = state.shapes.map(shapeToMarkup).filter(Boolean).join("\n");
+      render();
+      setStatus(`Deleted label "${hitLabel.text}".`);
+      return;
+    }
+    setStatus("Delete mode: click closer to a point, circle, or label.", true);
+    return;
+  }
+
+  pushUndoSnapshot();
+  const before = state.shapes.length;
+  state.shapes = state.shapes.filter((shape) => {
+    if (shape.type === "point" && pointMatches({ x: shape.x, y: shape.y }, target)) return false;
+    if (shape.type === "line") {
+      const a = pointMatches({ x: shape.x1, y: shape.y1 }, target);
+      const b = pointMatches({ x: shape.x2, y: shape.y2 }, target);
+      if (a || b) return false;
+    }
+    // remove circle if target is its centre
+    if (shape.type === "circle" && pointMatches({ x: shape.cx, y: shape.cy }, target)) return false;
+    return true;
+  });
+  const removed = before - state.shapes.length;
+  rebuildMarkup();
+  markupOutput.value = state.shapes.map(shapeToMarkup).filter(Boolean).join("\n");
+  render();
+  setStatus(`Deleted point at (${target.x}, ${target.y}) and ${removed - 1} connected shape(s).`);
+}
+
 function toCanvasPoint(event) {
   const rect = canvas.getBoundingClientRect();
   const xScale = state.logicalWidth / rect.width;
@@ -610,6 +792,168 @@ function toCanvasPoint(event) {
     x: Math.round((event.clientX - rect.left) * xScale),
     y: Math.round((event.clientY - rect.top) * yScale)
   };
+}
+
+// snaps a canvas-pixel point to the nearest grid intersection
+function applyGridSnap(point) {
+  if (!state.snapToGrid || !state.showGrid) return point;
+  const ox = Math.round(state.logicalWidth / 2);
+  const oy = Math.round(state.logicalHeight / 2);
+  return {
+    x: ox + Math.round((point.x - ox) / state.gridUnit) * state.gridUnit,
+    y: oy + Math.round((point.y - oy) / state.gridUnit) * state.gridUnit
+  };
+}
+
+function toDrawPoint(event) {
+  return applyGridSnap(toCanvasPoint(event));
+}
+
+function shapeBaseId(id) {
+  return String(id).split(".")[0];
+}
+
+function distToSegment(px, py, x1, y1, x2, y2) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return Math.hypot(px - x1, py - y1);
+  const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / lenSq));
+  return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+}
+
+function findShapeAtPoint(p) {
+  const HIT_PT = 10, HIT_LINE = 7, HIT_LABEL = 22;
+  for (const s of state.shapes)
+    if (s.type === "point" && Math.hypot(p.x - s.x, p.y - s.y) <= HIT_PT) return s;
+  for (const s of state.shapes)
+    if (s.type === "label" && Math.hypot(p.x - s.x, p.y - s.y) <= HIT_LABEL) return s;
+  for (const s of state.shapes)
+    if (s.type === "line" && distToSegment(p.x, p.y, s.x1, s.y1, s.x2, s.y2) <= HIT_LINE) return s;
+  for (const s of state.shapes)
+    if (s.type === "circle" && Math.abs(Math.hypot(p.x - s.cx, p.y - s.cy) - s.r) <= HIT_LINE) return s;
+  return null;
+}
+
+const markupHighlightLayer = document.getElementById("markupHighlightLayer");
+
+function updateMarkupHighlight(selectedLineIndices) {
+  const lines = markupOutput.value.split("\n");
+  const idxSet = new Set(selectedLineIndices);
+  markupHighlightLayer.innerHTML = lines
+    .map((line, i) => {
+      const escaped = line.replace(/&/g,"&amp;").replace(/</g,"&lt;");
+      if (idxSet.has(i)) return `<div class="markup-hl-row">${escaped || " "}</div>`;
+      return `<div>${escaped || " "}</div>`;
+    })
+    .join("");
+  // keep highlight layer scrolled in sync
+  markupHighlightLayer.scrollTop = markupOutput.scrollTop;
+}
+
+markupOutput.addEventListener("scroll", () => {
+  markupHighlightLayer.scrollTop = markupOutput.scrollTop;
+});
+
+function highlightMarkupForShapes(shapes, { scroll = true } = {}) {
+  const text = markupOutput.value;
+  const lines = text.split("\n");
+  // exact match — avoids false positives when multiple shapes share type+id
+  const exactLines = new Set([...shapes].map(s => shapeToMarkup(s)).filter(Boolean));
+  let selStart = -1, selEnd = -1, pos = 0;
+  const hlRows = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (exactLines.has(lines[i])) {
+      if (selStart === -1) selStart = pos;
+      selEnd = pos + lines[i].length;
+      hlRows.push(i);
+    }
+    pos += lines[i].length + 1;
+  }
+  updateMarkupHighlight(hlRows);
+  if (scroll && selStart !== -1) {
+    markupOutput.focus({ preventScroll: true });
+    markupOutput.setSelectionRange(selStart, selEnd);
+    const lineH = markupOutput.scrollHeight / Math.max(1, lines.length);
+    markupOutput.scrollTop = Math.max(0, (hlRows[0] || 0) * lineH - 40);
+    markupHighlightLayer.scrollTop = markupOutput.scrollTop;
+  }
+}
+
+function shapesConnectedTo(seeds) {
+  const visited = new Set(seeds);
+  const queue = [...seeds];
+  const endpointsOf = (s) => {
+    if (s.type === "line")   return [{x:s.x1,y:s.y1},{x:s.x2,y:s.y2}];
+    if (s.type === "point")  return [{x:s.x,y:s.y}];
+    if (s.type === "circle") return [{x:s.cx,y:s.cy}];
+    return [];
+  };
+  while (queue.length) {
+    const cur = queue.shift();
+    const pts = endpointsOf(cur);
+    for (const other of state.shapes) {
+      if (visited.has(other)) continue;
+      if (endpointsOf(other).some(op => pts.some(cp => pointMatches(cp, op)))) {
+        visited.add(other);
+        queue.push(other);
+      }
+    }
+  }
+  return visited;
+}
+
+// ── multi-click selection state ──
+let _selClickCount = 0;
+let _selClickTimer  = null;
+let _selHitShape    = null;
+
+function applySelectClick(hit) {
+  if (!hit) {
+    _selClickCount = 0;
+    _selHitShape = null;
+    state.selection.clear();
+    updateMarkupHighlight([]);
+    render();
+    return;
+  }
+
+  // same shape group → expand; different shape → restart
+  const sameBid = _selHitShape && shapeBaseId(hit.id) === shapeBaseId(_selHitShape.id);
+  if (sameBid) {
+    _selClickCount = Math.min(_selClickCount + 1, 4);
+  } else {
+    _selClickCount = 1;
+    _selHitShape = hit;
+  }
+
+  clearTimeout(_selClickTimer);
+  _selClickTimer = setTimeout(() => { _selClickCount = 0; _selHitShape = null; }, 450);
+
+  const bid = shapeBaseId(hit.id);
+  let selected;
+
+  if (_selClickCount === 1) {
+    // level 1: exact shape only
+    selected = new Set([hit]);
+    setStatus(`Selected ${hit.type} id=${hit.id}. Double-click to expand.`);
+  } else if (_selClickCount === 2) {
+    // level 2: all shapes with same base ID (full drawn stroke)
+    selected = new Set(state.shapes.filter(s => shapeBaseId(s.id) === bid));
+    setStatus(`Selected all segments of id=${bid}. Click again to expand to connected shapes.`);
+  } else if (_selClickCount === 3) {
+    // level 3: connected component through shared points
+    const l2 = new Set(state.shapes.filter(s => shapeBaseId(s.id) === bid));
+    selected = shapesConnectedTo(l2);
+    setStatus(`Selected connected component (${selected.size} shapes). Click again to select all.`);
+  } else {
+    // level 4: everything
+    selected = new Set(state.shapes);
+    setStatus(`All ${selected.size} shapes selected.`);
+  }
+
+  state.selection = selected;
+  highlightMarkupForShapes(selected);
+  render();
 }
 
 // ── angle label inline editor ──
@@ -1272,6 +1616,61 @@ function hasPointShape(point) {
   return state.shapes.some((shape) => shape.type === "point" && pointMatches(point, { x: shape.x, y: shape.y }));
 }
 
+// shared core used by addLine and AI batch processing (no undo push, no render)
+function addLineCore(start, end, color, forcedSplits = []) {
+  const id = getNextId();
+  const intersectionInfo = collectLineIntersections(start, end);
+  const intersectionPoints = [...intersectionInfo.points, ...forcedSplits];
+  splitExistingLines(intersectionInfo.hitsByLineIndex);
+  const segments = buildRaySegments(start, end, intersectionPoints);
+  const addedIntersectionPoints = intersectionPoints.filter((p) => !hasPointShape(p));
+  for (let i = 0; i < segments.length; i++) {
+    const seg = segments[i];
+    const segId = segments.length > 1 ? `${id}.${i + 1}` : id;
+    state.shapes.push({ type: "line", id: segId, x1: seg.x1, y1: seg.y1, x2: seg.x2, y2: seg.y2, color });
+  }
+  state.shapes.push({ type: "point", id, x: start.x, y: start.y, color });
+  state.shapes.push({ type: "point", id, x: end.x, y: end.y, color });
+  for (const p of addedIntersectionPoints) {
+    state.shapes.push({ type: "point", id, x: p.x, y: p.y, color });
+  }
+}
+
+function scaleShapesAboutOrigin(factor) {
+  const ox = Math.round(state.logicalWidth / 2);
+  const oy = Math.round(state.logicalHeight / 2);
+  pushUndoSnapshot();
+  for (const shape of state.shapes) {
+    if (shape.type === "line") {
+      shape.x1 = Math.round(ox + (shape.x1 - ox) * factor);
+      shape.y1 = Math.round(oy + (shape.y1 - oy) * factor);
+      shape.x2 = Math.round(ox + (shape.x2 - ox) * factor);
+      shape.y2 = Math.round(oy + (shape.y2 - oy) * factor);
+    } else if (shape.type === "circle") {
+      shape.cx = Math.round(ox + (shape.cx - ox) * factor);
+      shape.cy = Math.round(oy + (shape.cy - oy) * factor);
+      shape.r  = Math.round(shape.r * factor);
+    } else if (shape.type === "point" || shape.type === "label") {
+      shape.x = Math.round(ox + (shape.x - ox) * factor);
+      shape.y = Math.round(oy + (shape.y - oy) * factor);
+    }
+  }
+  markupOutput.value = state.shapes.map(shapeToMarkup).filter(Boolean).join("\n");
+}
+
+function addCircleCore(cx, cy, r, color) {
+  if (r < 1) return;
+  const intersectionInfo = collectCircleIntersections({ cx, cy, r });
+  splitExistingLines(intersectionInfo.hitsByLineIndex);
+  const addedIntersectionPoints = intersectionInfo.points.filter((p) => !hasPointShape(p));
+  const id = getNextId();
+  state.shapes.push({ type: "circle", id, cx, cy, r, color });
+  state.shapes.push({ type: "point", id, x: cx, y: cy, color });
+  for (const p of addedIntersectionPoints) {
+    state.shapes.push({ type: "point", id, x: p.x, y: p.y, color });
+  }
+}
+
 function addLine(start, end, forcedSplits = []) {
   pushUndoSnapshot();
 
@@ -1419,8 +1818,7 @@ function addLabel(point) {
 }
 
 canvas.addEventListener("mousemove", (event) => {
-  const point = toCanvasPoint(event);
-  state.lastPointerPoint = point;
+  const point = toDrawPoint(event);
 
   if (state.isDragging) {
     let currentPoint = point;
@@ -1487,7 +1885,7 @@ canvas.addEventListener("mousemove", (event) => {
     }
   }
 
-  render();
+  render(point);
 });
 
 canvas.addEventListener("mouseleave", () => {
@@ -1502,12 +1900,12 @@ canvas.addEventListener("mouseleave", () => {
 
 canvas.addEventListener("mousedown", (event) => {
   if (state.mode === "select") {
+    applySelectClick(findShapeAtPoint(toCanvasPoint(event)));
     return;
   }
 
   if (state.mode === "label") {
-    const point = toCanvasPoint(event);
-    addLabel(point);
+    const point = toDrawPoint(event);
     return;
   }
 
@@ -1517,10 +1915,15 @@ canvas.addEventListener("mousedown", (event) => {
     return;
   }
 
+  if (state.mode === "delete") {
+    deleteAtPoint(toCanvasPoint(event));
+    return;
+  }
+
   state.isDragging = true;
   state.hoverPoint = null;
   state.pendingDiameterCircle = null;
-  const rawStart = toCanvasPoint(event);
+  const rawStart = toDrawPoint(event);
   state.lastPointerPoint = rawStart;
   let startPoint = rawStart;
   let snapped = false;
@@ -1582,7 +1985,7 @@ canvas.addEventListener("mouseup", (event) => {
   }
 
   const start = state.draftPoint;
-  const rawEnd = toCanvasPoint(event);
+  const rawEnd = toDrawPoint(event);
   let end = rawEnd;
   const diameterCircle = state.pendingDiameterCircle;
 
@@ -1624,6 +2027,7 @@ lineBtn.addEventListener("click", () => setMode("line"));
 circleBtn.addEventListener("click", () => setMode("circle"));
 labelBtn.addEventListener("click", () => setMode("label"));
 angleBtn.addEventListener("click", () => setMode("angle"));
+deleteBtn.addEventListener("click", () => setMode("delete"));
 
 undoBtn.addEventListener("click", () => {
   state.draftPoint = null;
@@ -1652,6 +2056,9 @@ clearBtn.addEventListener("click", () => {
   state.pendingDiameterCircle = null;
   state.isDragging = false;
   state.hoverPoint = null;
+  state.angleAnalysis = null;
+  state.selection.clear();
+  updateMarkupHighlight([]);
   if (state.mode === "line") {
     setSnapInfo(snapInfoText("target: none"));
   }
@@ -1740,6 +2147,50 @@ window.addEventListener("keydown", (event) => {
     return;
   }
 
+  if (key === "g") {
+    state.showGrid = !state.showGrid;
+    render();
+    setStatus(`Grid lines ${state.showGrid ? "shown" : "hidden"} (G).`);
+    return;
+  }
+
+  if (key === "s") {
+    state.snapToGrid = !state.snapToGrid;
+    setStatus(`Grid snap ${state.snapToGrid ? "on — clicks snap to grid intersections" : "off"} (S).`);
+    return;
+  }
+
+  if (key === "<" || key === ">") {
+    state.anglePrecision = Math.min(3, Math.max(0,
+      state.anglePrecision + (key === ">" ? 1 : -1)
+    ));
+    if (state.angleAnalysis) analyzePointAnglesAt(state.angleAnalysis.anchor);
+    setStatus(`Angle precision: ${state.anglePrecision} decimal place${state.anglePrecision !== 1 ? "s" : ""} (< / >).`);
+    return;
+  }
+
+  if (key === "0") {
+    state.showArcDiffs = !state.showArcDiffs;
+    if (state.angleAnalysis) render();
+    setStatus(`Arc differences ${state.showArcDiffs ? "on" : "off"} (0).`);
+    return;
+  }
+
+  if (key === "x" || key === "z") {
+    const factor = key === "x" ? 1.25 : 1 / 1.25;
+    state.gridUnit = Math.round(Math.min(300, Math.max(15, state.gridUnit * factor)));
+    if (event.shiftKey && state.shapes.length > 0) {
+      scaleShapesAboutOrigin(factor);
+    }
+    const W = state.logicalWidth;
+    const H = state.logicalHeight;
+    const unitsX = (W / 2 / state.gridUnit).toFixed(1);
+    const unitsY = (H / 2 / state.gridUnit).toFixed(1);
+    render();
+    setStatus(`Zoom: 1 unit = ${state.gridUnit}px | visible range ±${unitsX} x ±${unitsY} (${key.toUpperCase()}).`);
+    return;
+  }
+
   if (key === "h" || key === "v") {
     const nextConstraint = key === "h" ? "horizontal" : "vertical";
     state.lineAxisConstraint = state.lineAxisConstraint === nextConstraint ? "none" : nextConstraint;
@@ -1799,3 +2250,203 @@ setMode("select");
 rebuildMarkup();
 syncColorUi();
 resizeCanvasToFit();
+
+// ── AI Draw ──
+const aiPromptEl = document.getElementById("aiPrompt");
+const aiSendBtn  = document.getElementById("aiSendBtn");
+const aiStatusEl = document.getElementById("aiStatus");
+const aiAppendEl = document.getElementById("aiAppend");
+const markupLoadBtn = document.getElementById("markupLoadBtn");
+const markupSaveBtn = document.getElementById("markupSaveBtn");
+
+function setAiStatus(msg, type = "") {
+  aiStatusEl.textContent = msg;
+  aiStatusEl.className = `ai-status ${type}`;
+}
+
+async function runAiDraw() {
+  const prompt = aiPromptEl.value.trim();
+  if (!prompt) { setAiStatus("Enter a description first.", "error"); return; }
+  aiSendBtn.disabled = true;
+  setAiStatus("Generating…");
+  try {
+    const res = await fetch("/api/ai-markup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt, gridUnit: state.gridUnit })
+    });
+    const data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || "Server error");
+
+    // strip any markdown code fences the model might add
+    const clean = data.markup.replace(/```[^\n]*\n?/g, "").trim();
+    const incoming = clean.split("\n").map(parseMarkupLine).filter(Boolean);
+
+    pushUndoSnapshot();
+    if (!aiAppendEl.checked) state.shapes = [];
+
+    for (const shape of incoming) {
+      if (shape.type === "line") {
+        addLineCore({ x: shape.x1, y: shape.y1 }, { x: shape.x2, y: shape.y2 }, shape.color);
+      } else if (shape.type === "circle") {
+        addCircleCore(shape.cx, shape.cy, shape.r, shape.color);
+      } else if (shape.type === "label") {
+        state.shapes.push(shape);
+      }
+      // skip bare point shapes — lines/circles generate their own
+    }
+
+    markupOutput.value = state.shapes.map(shapeToMarkup).filter(Boolean).join("\n");
+    render();
+    setAiStatus(`Done — ${clean.split("\n").filter(Boolean).length} shape(s) added.`, "ok");
+  } catch (err) {
+    setAiStatus(`Error: ${err.message}`, "error");
+  } finally {
+    aiSendBtn.disabled = false;
+  }
+}
+
+aiSendBtn.addEventListener("click", runAiDraw);
+aiPromptEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) runAiDraw();
+});
+
+markupSaveBtn.addEventListener("click", () => {
+  const blob = new Blob([markupOutput.value], { type: "text/plain" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "markup.txt";
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+function syncMarkupCursorToCanvas() {
+  if (state.mode !== "select") return;
+  const text = markupOutput.value;
+  const lines = text.split("\n");
+  const start = markupOutput.selectionStart;
+  const end   = markupOutput.selectionEnd;
+
+  let pos = 0, firstLine = 0, lastLine = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const lineEnd = pos + lines[i].length;
+    if (pos <= start && start <= lineEnd) firstLine = i;
+    if (pos <= end   && end   <= lineEnd) lastLine  = i;
+    pos += lines[i].length + 1;
+  }
+
+  // parse exact markup lines in selection → match shapes by full string comparison
+  const coveredMarkup = new Set();
+  for (let i = firstLine; i <= lastLine; i++) coveredMarkup.add(lines[i]);
+
+  if (coveredMarkup.size === 0) {
+    state.selection.clear();
+    updateMarkupHighlight([]);
+    render();
+    return;
+  }
+
+  // find shapes whose markup exactly matches a selected line
+  state.selection = new Set(
+    state.shapes.filter(s => coveredMarkup.has(shapeToMarkup(s)))
+  );
+
+  const hlRows = [];
+  pos = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (coveredMarkup.has(lines[i]) && lines[i].trim()) hlRows.push(i);
+    pos += lines[i].length + 1;
+  }
+  updateMarkupHighlight(hlRows);
+  render();
+}
+
+markupOutput.addEventListener("click",   syncMarkupCursorToCanvas);
+markupOutput.addEventListener("keyup",   syncMarkupCursorToCanvas);
+markupOutput.addEventListener("mouseup", syncMarkupCursorToCanvas);
+
+const markupFloatBtn = document.getElementById("markupFloatBtn");
+const markupCard     = markupFloatBtn.closest(".markup-card");
+
+markupFloatBtn.addEventListener("click", () => {
+  const floating = markupCard.classList.toggle("is-floating");
+  markupFloatBtn.textContent = floating ? "⊠" : "↗";
+  markupFloatBtn.title = floating ? "Dock" : "Float";
+  if (floating) {
+    const r = markupCard.getBoundingClientRect();
+    markupCard.style.left   = `${r.left}px`;
+    markupCard.style.top    = `${r.top}px`;
+    markupCard.style.width  = `${r.width}px`;
+    markupCard.style.height = `${r.height}px`;
+  } else {
+    markupCard.style.cssText = "";
+  }
+});
+
+// drag + 4-corner resize for the floating markup card
+(function () {
+  let action = null; // { type: 'drag'|'resize', corner, startX, startY, startL, startT, startW, startH }
+
+  const titleEl = markupCard.querySelector(".card-title");
+
+  function startAction(e, type, corner = null) {
+    if (!markupCard.classList.contains("is-floating")) return;
+    if (type === "drag" && e.target.tagName === "BUTTON") return;
+    const r = markupCard.getBoundingClientRect();
+    action = { type, corner, startX: e.clientX, startY: e.clientY,
+               startL: r.left, startT: r.top, startW: r.width, startH: r.height };
+    e.preventDefault();
+  }
+
+  titleEl.addEventListener("mousedown", (e) => startAction(e, "drag"));
+
+  for (const handle of markupCard.querySelectorAll(".resize-handle")) {
+    const corner = [...handle.classList].find(c => c.startsWith("resize-") && c !== "resize-handle").replace("resize-", "");
+    handle.addEventListener("mousedown", (e) => { startAction(e, "resize", corner); e.stopPropagation(); });
+  }
+
+  document.addEventListener("mousemove", (e) => {
+    if (!action) return;
+    const dx = e.clientX - action.startX, dy = e.clientY - action.startY;
+    if (action.type === "drag") {
+      markupCard.style.left = `${action.startL + dx}px`;
+      markupCard.style.top  = `${action.startT + dy}px`;
+      return;
+    }
+    const c = action.corner;
+    const minW = 260, minH = 180;
+    let l = action.startL, t = action.startT, w = action.startW, h = action.startH;
+    if (c === "br") { w = Math.max(minW, w + dx); h = Math.max(minH, h + dy); }
+    if (c === "bl") { const nw = Math.max(minW, w - dx); l = action.startL + (w - nw); w = nw; h = Math.max(minH, h + dy); }
+    if (c === "tr") { w = Math.max(minW, w + dx); const nh = Math.max(minH, h - dy); t = action.startT + (h - nh); h = nh; }
+    if (c === "tl") { const nw = Math.max(minW, w - dx); l = action.startL + (w - nw); w = nw; const nh = Math.max(minH, h - dy); t = action.startT + (h - nh); h = nh; }
+    markupCard.style.left   = `${l}px`;
+    markupCard.style.top    = `${t}px`;
+    markupCard.style.width  = `${w}px`;
+    markupCard.style.height = `${h}px`;
+  });
+
+  document.addEventListener("mouseup", () => { action = null; });
+}());
+
+markupLoadBtn.addEventListener("click", () => {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".txt,text/plain";
+  input.onchange = () => {
+    const file = input.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const text = e.target.result;
+      markupOutput.value = text;
+      const parsed = text.split("\n").map(parseMarkupLine).filter(Boolean);
+      pushUndoSnapshot();
+      state.shapes = parsed;
+      state.angleAnalysis = null;
+      render();
+    };
+    reader.readAsText(file);
+  };
+  input.click();
+});

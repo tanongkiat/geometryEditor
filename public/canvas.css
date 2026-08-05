@@ -581,6 +581,23 @@ button.is-active .tool-icon svg {
   align-items: stretch;
 }
 
+.right-column {
+  display: flex;
+  flex-direction: column;
+  gap: 1.2rem;
+  min-height: 0;
+  height: 100%;
+}
+
+.right-column .ai-card {
+  flex: 0 0 auto; /* compact — only as tall as its content */
+}
+
+.right-column .markup-card {
+  flex: 1 1 0;    /* fills remaining column height */
+  min-height: 0;
+}
+
 .card {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -670,17 +687,98 @@ button.is-active .tool-icon svg {
   text-align: center;
 }
 
+.markup-editor-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+#markupHighlightLayer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  overflow: hidden;
+  font-family: "JetBrains Mono", "Menlo", monospace;
+  font-size: 0.88rem;
+  line-height: 1.8;
+  padding: 1rem;
+  white-space: pre;
+  box-sizing: border-box;
+}
+
+#markupHighlightLayer div {
+  height: calc(0.88rem * 1.8);
+  line-height: calc(0.88rem * 1.8);
+}
+
+.markup-hl-row {
+  background: rgba(52, 211, 153, 0.2);
+  border-left: 3px solid #34d399;
+  margin-left: -1rem;
+  padding-left: calc(1rem - 3px);
+  border-radius: 0 3px 3px 0;
+}
+
 #markupOutput {
+  position: relative;
+  z-index: 1;
   flex: 1;
   border: none;
-  background: #0d1117;
+  background: transparent;
   color: #c9d1d9;
   font-family: "JetBrains Mono", "Menlo", monospace;
-  line-height: 1.6;
-  font-size: 0.82rem;
+  line-height: 1.8;
+  font-size: 0.88rem;
   padding: 1rem;
   resize: none;
   border-radius: 0 0 18px 18px;
+  caret-color: #c9d1d9;
+  overflow-x: auto;
+  white-space: pre;
+}
+
+.markup-card {
+  background: #0d1117;
+}
+
+.markup-card.is-floating {
+  position: fixed;
+  z-index: 200;
+  overflow: hidden;
+  min-width: 260px;
+  min-height: 180px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.55);
+  border: 1px solid rgba(52, 211, 153, 0.3);
+}
+
+.resize-handle {
+  display: none;
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  z-index: 10;
+  border: 2px solid rgba(52, 211, 153, 0.6);
+  border-radius: 3px;
+  background: #0d1117;
+}
+
+.is-floating .resize-handle { display: block; }
+
+.resize-tl { top: -1px;    left: -1px;   cursor: nw-resize; }
+.resize-tr { top: -1px;    right: -1px;  cursor: ne-resize; }
+.resize-bl { bottom: -1px; left: -1px;   cursor: sw-resize; }
+.resize-br { bottom: -1px; right: -1px;  cursor: se-resize; }
+
+.markup-card.is-floating .card-title {
+  cursor: grab;
+  user-select: none;
+}
+
+.markup-card.is-floating .card-title:active {
+  cursor: grabbing;
 }
 
 .markup-card .card-title {
@@ -692,6 +790,120 @@ button.is-active .tool-icon svg {
 .markup-card .card-title::before {
   background: #f0883e;
 }
+
+.markup-title-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 0.4rem;
+}
+
+.markup-action-btn {
+  padding: 0.22rem 0.65rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  background: rgba(255, 255, 255, 0.07);
+  color: #8b949e;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  cursor: pointer;
+  text-transform: uppercase;
+  transition: background 120ms, color 120ms;
+}
+
+.markup-action-btn:hover {
+  background: rgba(255, 255, 255, 0.13);
+  color: #c9d1d9;
+}
+
+/* ── AI Draw panel ── */
+.ai-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.ai-card .card-title {
+  background: linear-gradient(90deg, #0c1a2e, #0f2a1a);
+  color: #6ee7b7;
+  border-bottom-color: rgba(52, 211, 153, 0.2);
+}
+
+.ai-card .card-title::before {
+  background: #34d399;
+}
+
+.ai-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.75rem;
+  flex: 1;
+  min-height: 0;
+}
+
+#aiPrompt {
+  flex: 1;
+  min-height: 72px;
+  max-height: 120px;
+  border: 1px solid rgba(52, 211, 153, 0.2);
+  border-radius: 8px;
+  background: #0d1117;
+  color: #c9d1d9;
+  font-family: "Inter", system-ui, sans-serif;
+  font-size: 0.85rem;
+  line-height: 1.55;
+  padding: 0.6rem 0.75rem;
+  resize: none;
+  outline: none;
+  transition: border-color 150ms;
+}
+
+#aiPrompt:focus {
+  border-color: rgba(52, 211, 153, 0.5);
+}
+
+.ai-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.ai-mode-label {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  color: #8b949e;
+  cursor: pointer;
+  user-select: none;
+}
+
+.ai-send-btn {
+  margin-left: auto;
+  padding: 0.42rem 1.1rem;
+  background: linear-gradient(135deg, #0d9488, #059669);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 150ms, transform 150ms;
+}
+
+.ai-send-btn:hover { opacity: 0.88; }
+.ai-send-btn:active { transform: scale(0.97); }
+.ai-send-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.ai-status {
+  font-size: 0.75rem;
+  color: #8b949e;
+  min-height: 1rem;
+}
+
+.ai-status.error { color: #f87171; }
+.ai-status.ok    { color: #34d399; }
 
 @media (max-width: 1100px) {
   .app-shell {
