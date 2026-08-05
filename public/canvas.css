@@ -653,6 +653,23 @@ button.is-active .tool-icon svg {
     0 8px 32px rgba(28, 43, 56, 0.14);
 }
 
+#angleEditor {
+  position: fixed;
+  display: none;
+  width: 96px;
+  padding: 4px 8px;
+  font: 600 13px Inter, sans-serif;
+  color: #06b6d4;
+  background: rgba(8, 22, 30, 0.95);
+  border: 1.5px solid #22d3ee;
+  border-radius: 7px;
+  outline: none;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  z-index: 9999;
+  transform: translate(-50%, calc(-100% - 8px));
+  text-align: center;
+}
+
 #markupOutput {
   flex: 1;
   border: none;

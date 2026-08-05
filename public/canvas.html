@@ -165,11 +165,12 @@
 
         <section class="card markup-card">
           <div class="card-title">Live Markup</div>
-          <textarea id="markupOutput" readonly></textarea>
+          <textarea id="markupOutput" spellcheck="false" placeholder="Type markup here…"></textarea>
         </section>
       </main>
     </div>
 
+    <input id="angleEditor" type="number" step="0.001" min="0" max="360" placeholder="deg" aria-label="Edit angle" />
     <script src="/canvas.js"></script>
   </body>
 </html>

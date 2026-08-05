@@ -1,4 +1,5 @@
 const canvas = document.getElementById("drawCanvas");
+const angleEditorEl = document.getElementById("angleEditor");
 const markupOutput = document.getElementById("markupOutput");
 const statusEl = document.getElementById("status");
 const selectBtn = document.getElementById("selectBtn");
@@ -34,7 +35,8 @@ const state = {
   logicalHeight: 700,
   snapRadius: 14,
   snapKindFilter: "any",
-  gridUnit: 50
+  gridUnit: 50,
+  markupFocused: false
 };
 
 function resizeCanvasToFit() {
@@ -256,7 +258,50 @@ function shapeToMarkup(shape) {
   return "";
 }
 
+function parseMarkupKV(line) {
+  const kv = {};
+  const re = /(\w+)=("(?:[^"\\]|\\.)*"|\S+)/g;
+  let m;
+  while ((m = re.exec(line)) !== null) {
+    let v = m[2];
+    if (v.startsWith('"')) v = v.slice(1, -1).replace(/\\([\\"]) /g, '$1');
+    kv[m[1]] = v;
+  }
+  return kv;
+}
+
+function parseMarkupLine(raw) {
+  const line = raw.trim();
+  if (!line || line.startsWith('#')) return null;
+  const type = line.split(/\s+/)[0];
+  const kv = parseMarkupKV(line);
+  const color = kv.color || '#1a1a2e';
+  const id = kv.id || '0';
+  if (type === 'line') {
+    const x1 = parseFloat(kv.x1), y1 = parseFloat(kv.y1), x2 = parseFloat(kv.x2), y2 = parseFloat(kv.y2);
+    if (!Number.isFinite(x1) || !Number.isFinite(y1) || !Number.isFinite(x2) || !Number.isFinite(y2)) return null;
+    return { type: 'line', id, x1, y1, x2, y2, color };
+  }
+  if (type === 'circle') {
+    const cx = parseFloat(kv.cx), cy = parseFloat(kv.cy), r = parseFloat(kv.r);
+    if (!Number.isFinite(cx) || !Number.isFinite(cy) || !Number.isFinite(r) || r < 1) return null;
+    return { type: 'circle', id, cx, cy, r, color };
+  }
+  if (type === 'point') {
+    const x = parseFloat(kv.x), y = parseFloat(kv.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { type: 'point', id, x, y, color };
+  }
+  if (type === 'label') {
+    const x = parseFloat(kv.x), y = parseFloat(kv.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { type: 'label', id, x, y, text: kv.text || 'Label', color };
+  }
+  return null;
+}
+
 function rebuildMarkup() {
+  if (state.markupFocused) return; // don't overwrite while user is typing
   markupOutput.value = state.shapes.map(shapeToMarkup).filter(Boolean).join("\n");
 }
 
@@ -435,6 +480,9 @@ function drawAngleAnalysisOverlay() {
 
     const tx = anchor.x + (ray.to.x - anchor.x) * 0.35;
     const ty = anchor.y + (ray.to.y - anchor.y) * 0.35;
+    // store for click-to-edit hit-testing
+    ray.labelX = tx + 4;
+    ray.labelY = ty - 4;
     ctx.setLineDash([]);
     ctx.font = "600 12px Inter, sans-serif";
     ctx.fillText(`${formatNumber(ray.angle)} deg`, tx + 4, ty - 4);
@@ -562,6 +610,103 @@ function toCanvasPoint(event) {
     x: Math.round((event.clientX - rect.left) * xScale),
     y: Math.round((event.clientY - rect.top) * yScale)
   };
+}
+
+// ── angle label inline editor ──
+
+function labelToViewport(canvasX, canvasY) {
+  const rect = canvas.getBoundingClientRect();
+  const xScale = rect.width / state.logicalWidth;
+  const yScale = rect.height / state.logicalHeight;
+  return {
+    x: rect.left + canvasX * xScale,
+    y: rect.top + canvasY * yScale
+  };
+}
+
+function hideAngleEditor() {
+  angleEditorEl.style.display = "none";
+  angleEditorEl._ray = null;
+}
+
+function commitAngleEdit() {
+  const ray = angleEditorEl._ray;
+  if (!ray || !state.angleAnalysis) {
+    hideAngleEditor();
+    return;
+  }
+  const rawVal = parseFloat(angleEditorEl.value);
+  hideAngleEditor();
+  if (!Number.isFinite(rawVal)) return;
+  const newAngle = ((rawVal % 360) + 360) % 360;
+  const { anchor } = state.angleAnalysis;
+  const oldTo = ray.to;
+  const dx = oldTo.x - anchor.x;
+  const dy = oldTo.y - anchor.y;
+  const dist = Math.sqrt(dx * dx + dy * dy);
+  const rad = (newAngle * Math.PI) / 180;
+  const newTo = {
+    x: Math.round(anchor.x + dist * Math.cos(rad)),
+    y: Math.round(anchor.y + dist * Math.sin(rad))
+  };
+  pushUndoSnapshot();
+
+  // count how many line endpoints sit at oldTo BEFORE we modify anything
+  const oldToRefs = state.shapes.reduce((n, s) => {
+    if (s.type !== "line") return n;
+    if (pointMatches({ x: s.x1, y: s.y1 }, oldTo)) n++;
+    if (pointMatches({ x: s.x2, y: s.y2 }, oldTo)) n++;
+    return n;
+  }, 0);
+  const isShared = oldToRefs > 1; // another line also ends at oldTo
+
+  for (const shape of state.shapes) {
+    if (shape.type === "line") {
+      const aMatch = pointMatches({ x: shape.x1, y: shape.y1 }, anchor) && pointMatches({ x: shape.x2, y: shape.y2 }, oldTo);
+      const bMatch = pointMatches({ x: shape.x2, y: shape.y2 }, anchor) && pointMatches({ x: shape.x1, y: shape.y1 }, oldTo);
+      if (aMatch) { shape.x2 = newTo.x; shape.y2 = newTo.y; }
+      else if (bMatch) { shape.x1 = newTo.x; shape.y1 = newTo.y; }
+    } else if (!isShared && shape.type === "point" && pointMatches({ x: shape.x, y: shape.y }, oldTo)) {
+      // safe to move: no other line references this point
+      shape.x = newTo.x;
+      shape.y = newTo.y;
+    }
+  }
+
+  // shared endpoint: keep original point, add a new one at the rotated position
+  if (isShared) {
+    state.shapes.push({ type: "point", id: getNextId(), x: newTo.x, y: newTo.y, color: state.color });
+  }
+  rebuildMarkup();
+  // force markup sync regardless of focus state after angle edit
+  markupOutput.value = state.shapes.map(shapeToMarkup).filter(Boolean).join("\n");
+  analyzePointAnglesAt(anchor);
+}
+
+function tryOpenAngleEditor(event, canvasPoint) {
+  if (!state.angleAnalysis) return false;
+  const { rays } = state.angleAnalysis;
+  const rect = canvas.getBoundingClientRect();
+  const screenScale = rect.width / state.logicalWidth; // logical → screen px
+  const HIT_SCREEN = 32; // hit radius in screen pixels
+  for (const ray of rays) {
+    if (ray.labelX === undefined) continue;
+    const screenLX = rect.left + ray.labelX * screenScale;
+    const screenLY = rect.top + ray.labelY * (rect.height / state.logicalHeight);
+    const d = Math.sqrt((event.clientX - screenLX) ** 2 + (event.clientY - screenLY) ** 2);
+    if (d <= HIT_SCREEN) {
+      event.preventDefault();
+      angleEditorEl.style.left = `${screenLX}px`;
+      angleEditorEl.style.top = `${screenLY}px`;
+      angleEditorEl.style.display = "block";
+      angleEditorEl.value = formatNumber(ray.angle);
+      angleEditorEl._ray = ray;
+      // defer focus so mousedown finishes before we steal it
+      requestAnimationFrame(() => { angleEditorEl.focus(); angleEditorEl.select(); });
+      return true;
+    }
+  }
+  return false;
 }
 
 function cross(ax, ay, bx, by) {
@@ -1367,6 +1512,7 @@ canvas.addEventListener("mousedown", (event) => {
   }
 
   if (state.mode === "angle") {
+    if (tryOpenAngleEditor(event, toCanvasPoint(event))) return;
     analyzePointAnglesAt(toCanvasPoint(event));
     return;
   }
@@ -1621,6 +1767,33 @@ window.addEventListener("keyup", (event) => {
 
   applySnapFromLastPointer(false);
 });
+
+angleEditorEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); commitAngleEdit(); }
+  if (e.key === "Escape") { e.preventDefault(); hideAngleEditor(); }
+});
+
+let _markupTimer = null;
+markupOutput.addEventListener("focus", () => { state.markupFocused = true; });
+markupOutput.addEventListener("blur", () => {
+  state.markupFocused = false;
+  // sync canvas → markup on blur so it's tidy
+  markupOutput.value = state.shapes.map(shapeToMarkup).filter(Boolean).join("\n");
+});
+markupOutput.addEventListener("input", () => {
+  clearTimeout(_markupTimer);
+  _markupTimer = setTimeout(() => {
+    const parsed = markupOutput.value.split("\n").map(parseMarkupLine).filter(Boolean);
+    pushUndoSnapshot();
+    state.shapes = parsed;
+    state.angleAnalysis = null;
+    render();
+  }, 350);
+});
+// commit on click-away
+canvas.addEventListener("mousedown", () => {
+  if (angleEditorEl.style.display !== "none") commitAngleEdit();
+}, true); // capture phase so it runs before the main handler
 
 setMode("select");
 rebuildMarkup();
