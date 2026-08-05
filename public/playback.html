@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Markup Playback · Boyd-Math-Tools</title>
+    <link rel="stylesheet" href="/playback.css" />
+  </head>
+  <body>
+    <div class="bg-orb bg-orb-a"></div>
+    <div class="bg-orb bg-orb-b"></div>
+    <div class="grid-fade"></div>
+
+    <header class="page-header">
+      <div class="header-brand">
+        <div class="logo-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="7"/>
+            <path d="M4 12h16"/>
+            <path d="M12 4v4M12 16v4"/>
+            <circle cx="12" cy="12" r="1.8" fill="#34d399" stroke="none"/>
+          </svg>
+        </div>
+        <div class="title-wrap">
+          <p class="kicker">Boyd-Math-Tools</p>
+          <h1>Markup Playback</h1>
+        </div>
+      </div>
+
+      <nav class="legend-menu-bar" aria-label="Playback menus">
+        <details class="top-legend files-legend">
+          <summary>Files</summary>
+          <div class="legend-panel files-panel">
+            <div class="legend-item files-menu-item">
+              <div class="legend-copy">
+                <span class="legend-title">Load markup files</span>
+                <span class="legend-text">Select markup files to create a playback sequence.</span>
+              </div>
+              <button id="loadFilesBtn" type="button" class="legend-action-btn" aria-label="Load markup files">Choose files</button>
+            </div>
+            <div class="legend-item files-menu-item">
+              <div class="legend-copy">
+                <span class="legend-title">Save playback</span>
+                <span class="legend-text">Save this sequence and notes for later playback.</span>
+              </div>
+              <button id="saveSessionBtn" type="button" class="legend-action-btn" aria-label="Save playback">Save</button>
+            </div>
+            <div class="legend-item files-menu-item">
+              <div class="legend-copy">
+                <span class="legend-title">Open saved playback</span>
+                <span class="legend-text">Restore a previously saved sequence.</span>
+              </div>
+              <button id="openSessionBtn" type="button" class="legend-action-btn" aria-label="Open saved playback">Open</button>
+            </div>
+          </div>
+        </details>
+
+        <details class="top-legend share-legend">
+          <summary>Share</summary>
+          <div class="legend-panel share-panel">
+            <div class="legend-item files-menu-item">
+              <div class="legend-copy">
+                <span class="legend-title">Export playback</span>
+                <span class="legend-text">Export as JSON for sharing.</span>
+              </div>
+              <button id="exportSessionBtn" type="button" class="legend-action-btn" aria-label="Export playback">Export</button>
+            </div>
+            <div class="legend-item files-menu-item">
+              <div class="legend-copy">
+                <span class="legend-title">Import playback</span>
+                <span class="legend-text">Load a shared playback file.</span>
+              </div>
+              <button id="importSessionBtn" type="button" class="legend-action-btn" aria-label="Import playback">Import</button>
+            </div>
+          </div>
+        </details>
+
+        <details class="top-legend view-legend">
+          <summary>View</summary>
+          <div class="legend-panel view-panel">
+            <div class="legend-item view-menu-item">
+              <label class="view-label">
+                <span class="legend-title">Playback speed</span>
+                <select id="speedSelect" class="view-select" aria-label="Playback speed">
+                  <option value="3000">3 seconds</option>
+                  <option value="2000" selected>2 seconds</option>
+                  <option value="1000">1 second</option>
+                  <option value="500">0.5 second</option>
+                </select>
+              </label>
+            </div>
+            <div class="legend-item view-menu-item">
+              <label class="view-checkbox-label">
+                <input id="cumulativeToggle" type="checkbox" />
+                <span class="legend-title">Cumulative steps</span>
+              </label>
+              <span class="legend-text">Show all markup from first step through current.</span>
+            </div>
+          </div>
+        </details>
+
+        <details class="top-shortcuts help-legend">
+          <summary>Help</summary>
+          <ul class="shortcut-list help-shortcuts">
+            <li><span class="keycap">←/→</span><span>Step backward or forward</span></li>
+            <li><span class="keycap">Space</span><span>Play or pause</span></li>
+            <li><span class="keycap">Home/End</span><span>Jump to first or last step</span></li>
+            <li><span class="keycap">Ctrl+S</span><span>Save current playback</span></li>
+          </ul>
+        </details>
+
+        <input id="fileInput" type="file" accept=".txt,text/plain" multiple hidden />
+        <input id="importFileInput" type="file" accept="application/json,.json" hidden />
+      </nav>
+    </header>
+
+    <div class="app-shell">
+      <aside class="controlbar" aria-label="Playback steps">
+        <div class="steps-heading">
+          <div class="steps-title-wrap">
+            <p class="kicker">Sequence</p>
+            <h2>Steps</h2>
+          </div>
+          <span id="stepCountBadge" class="count-badge">0</span>
+        </div>
+
+        <button id="dropZone" class="drop-zone" type="button">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+            <path d="M12 16V4m0 0L7.5 8.5M12 4l4.5 4.5" />
+            <path d="M5 14v5h14v-5" />
+          </svg>
+          <span><strong>Choose files</strong> or drop them here</span>
+          <small>Sorted alphabetically.</small>
+        </button>
+
+        <div id="emptySteps" class="empty-steps">
+          Your loaded files will appear here.
+        </div>
+
+        <ol id="stepList" class="step-list" aria-label="Loaded markup files"></ol>
+      </aside>
+
+      <div class="layout">
+        <section class="player-panel" aria-label="Geometry playback player">
+          <div class="player-heading">
+            <div class="current-step-copy">
+              <span id="stepCounter" class="step-counter">No steps loaded</span>
+              <h2 id="currentFileName">Load markup files to begin</h2>
+            </div>
+            <div id="summary" class="summary" aria-live="polite"></div>
+          </div>
+
+          <div class="step-note-editor">
+            <label for="stepNote">Step explanation</label>
+            <textarea id="stepNote" placeholder="Add an explanation for this step…" rows="2" aria-label="Step explanation"></textarea>
+          </div>
+
+          <div id="playbackViewport" class="playback-viewport">
+            <div id="viewportEmpty" class="viewport-empty">
+              <svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+                <circle cx="32" cy="32" r="22" />
+                <path d="M15 41l13-18 19 23M21 33h24" />
+              </svg>
+              <h3>Ready for your geometry sequence</h3>
+              <p>Select two or more markup files, then move through them manually or press Play.</p>
+            </div>
+          </div>
+
+          <div class="timeline-row">
+            <span>1</span>
+            <input id="stepSlider" type="range" min="0" max="0" value="0" disabled aria-label="Playback step" />
+            <span id="sliderEnd">0</span>
+          </div>
+
+          <div class="transport">
+            <div class="transport-buttons" aria-label="Playback controls">
+              <button id="firstBtn" type="button" title="First step (Home)" aria-label="First step" disabled>⇤</button>
+              <button id="previousBtn" type="button" title="Previous step (Left arrow)" aria-label="Previous step" disabled>←</button>
+              <button id="playBtn" class="play-button" type="button" title="Play or pause (Space)" aria-label="Play" disabled>
+                <span class="play-icon">▶</span>
+                <span class="play-label">Play</span>
+              </button>
+              <button id="nextBtn" type="button" title="Next step (Right arrow)" aria-label="Next step" disabled>→</button>
+              <button id="lastBtn" type="button" title="Last step (End)" aria-label="Last step" disabled>⇥</button>
+            </div>
+          </div>
+
+          <p id="statusText" class="status-text" aria-live="polite">Load markup files to start playback.</p>
+          <p class="shortcut-help">Keyboard: <kbd>←</kbd>/<kbd>→</kbd> step · <kbd>Space</kbd> play or pause · <kbd>Home</kbd>/<kbd>End</kbd> jump</p>
+        </section>
+      </div>
+    </div>
+
+    <dialog id="sessionDialog" class="session-dialog">
+      <form method="dialog" class="session-form">
+        <div class="session-dialog-header">
+          <h2 id="sessionDialogTitle">Saved playbacks</h2>
+          <button id="closeSessionDialog" class="icon-button" type="submit" value="cancel" aria-label="Close">×</button>
+        </div>
+        <div id="sessionDialogBody" class="session-dialog-body">
+          <p class="session-empty">No saved playbacks yet.</p>
+        </div>
+      </form>
+    </dialog>
+
+    <script src="/playback.js"></script>
+  </body>
+</html>
