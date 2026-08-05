@@ -12,29 +12,22 @@
     <div class="grid-fade"></div>
 
     <header class="page-header">
-      <div class="logo-mark" aria-hidden="true">
-        <svg viewBox="0 0 24 24">
-          <circle cx="12" cy="12" r="7"/>
-          <path d="M4 12h16"/>
-          <path d="M12 4v4M12 16v4"/>
-          <circle cx="12" cy="12" r="1.8" fill="#34d399" stroke="none"/>
-        </svg>
-      </div>
-      <div class="title-wrap">
-        <p class="kicker">Boyd-Math-Tools</p>
-        <h1>Drawing Tools</h1>
-      </div>
-      <div class="top-live" aria-live="polite">
-        <div class="live-chip">
-          <span class="live-label">Status</span>
-          <div id="status" class="status">Ready</div>
+      <div class="header-brand">
+        <div class="logo-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="7"/>
+            <path d="M4 12h16"/>
+            <path d="M12 4v4M12 16v4"/>
+            <circle cx="12" cy="12" r="1.8" fill="#34d399" stroke="none"/>
+          </svg>
         </div>
-        <div class="live-chip">
-          <span class="live-label">Snap</span>
-          <div id="snapInfo" class="snap-info">Snap mode: auto | target: none</div>
+        <div class="title-wrap">
+          <p class="kicker">Boyd-Math-Tools</p>
+          <h1>Drawing Tools</h1>
         </div>
       </div>
-      <details id="equationLegend" class="top-legend">
+      <nav class="legend-menu-bar" aria-label="Canvas menus">
+        <details id="equationLegend" class="top-legend">
         <summary>Equations</summary>
         <div class="legend-panel">
           <div class="legend-item">
@@ -54,8 +47,82 @@
             </div>
           </div>
         </div>
-      </details>
-      <details id="solverLegend" class="top-legend solver-legend">
+        </details>
+        <details id="markupLegend" class="top-legend markup-legend floating-legend">
+        <summary>Live Markup</summary>
+        <div class="legend-panel markup-legend-panel">
+          <span class="floating-resize-handle floating-resize-tl" data-resize-corner="tl" aria-hidden="true"></span>
+          <span class="floating-resize-handle floating-resize-tr" data-resize-corner="tr" aria-hidden="true"></span>
+          <span class="floating-resize-handle floating-resize-bl" data-resize-corner="bl" aria-hidden="true"></span>
+          <span class="floating-resize-handle floating-resize-br" data-resize-corner="br" aria-hidden="true"></span>
+          <div class="floating-legend-toolbar markup-legend-toolbar">
+            <span class="legend-text">Edit the canvas markup directly.</span>
+            <div class="markup-title-actions">
+              <button id="markupLoadBtn" type="button" class="markup-action-btn">Load</button>
+              <button id="markupSaveBtn" type="button" class="markup-action-btn">Save</button>
+              <button id="markupFloatBtn" type="button" class="markup-action-btn" aria-pressed="false" title="Float Live Markup over the canvas">Float</button>
+            </div>
+          </div>
+          <div class="markup-editor-wrap">
+            <div id="markupHighlightLayer" aria-hidden="true"></div>
+            <textarea id="markupOutput" spellcheck="false" wrap="off" aria-label="Live geometry markup" placeholder="Type markup here…"></textarea>
+          </div>
+        </div>
+        </details>
+        <details id="aiLegend" class="top-legend ai-legend floating-legend">
+        <summary>AI Draw</summary>
+        <div class="legend-panel ai-legend-panel">
+          <span class="floating-resize-handle floating-resize-tl" data-resize-corner="tl" aria-hidden="true"></span>
+          <span class="floating-resize-handle floating-resize-tr" data-resize-corner="tr" aria-hidden="true"></span>
+          <span class="floating-resize-handle floating-resize-bl" data-resize-corner="bl" aria-hidden="true"></span>
+          <span class="floating-resize-handle floating-resize-br" data-resize-corner="br" aria-hidden="true"></span>
+          <div class="floating-legend-toolbar ai-legend-toolbar">
+            <span class="legend-text">Generate geometry or analyze a reference image.</span>
+            <button id="aiFloatBtn" type="button" class="markup-action-btn" aria-pressed="false" title="Float AI Draw over the canvas">Float</button>
+          </div>
+          <div class="ai-body">
+            <textarea id="aiPrompt" spellcheck="true" placeholder="Describe what to draw… e.g. &quot;draw a right triangle with legs 150 and 200 centred on the canvas&quot;"></textarea>
+            <div class="ai-controls-row">
+              <label class="ai-model-label" for="aiModelSelect">
+                <span class="ai-control-title">Model</span>
+                <select id="aiModelSelect" class="ai-model-select" aria-label="Select AI model">
+                  <option value="gpt-4o-mini">GPT-4o mini</option>
+                  <option value="gpt-4o">GPT-4o</option>
+                </select>
+              </label>
+            </div>
+            <div class="ai-image-panel">
+              <label class="ai-model-label" for="aiImageInput">
+                <span class="ai-control-title">Reference Image</span>
+                <input id="aiImageInput" class="ai-image-input" type="file" accept="image/*" aria-label="Choose a reference image for AI drawing" />
+              </label>
+              <div id="aiImagePreviewWrap" class="ai-image-preview-wrap is-empty">
+                <img id="aiImagePreview" class="ai-image-preview" alt="Reference preview" />
+                <span id="aiImageMeta" class="ai-image-meta">No image selected.</span>
+              </div>
+            </div>
+            <div class="ai-actions">
+              <label class="ai-mode-label">
+                <input type="checkbox" id="aiAppend" checked />
+                Append to canvas
+              </label>
+              <button id="aiSendBtn" type="button" class="ai-send-btn">Generate</button>
+            </div>
+            <div class="ai-secondary-actions">
+              <button id="aiUseImageBtn" type="button" class="ai-image-canvas-btn">Load Image as Background</button>
+            </div>
+            <label class="ai-mode-label">
+              <input type="checkbox" id="aiDebugOverlay" checked />
+              Show detection debug overlay
+            </label>
+            <div id="aiStatus" class="ai-status"></div>
+            <div class="ai-secondary-actions">
+              <button id="aiRemoveImageBtn" type="button" class="ai-image-canvas-btn">Remove Background Image</button>
+            </div>
+          </div>
+        </div>
+        </details>
+        <details id="solverLegend" class="top-legend solver-legend">
         <summary>Solver</summary>
         <div class="legend-panel solver-panel">
           <div class="legend-item solver-item">
@@ -73,8 +140,8 @@
             <button id="allVerticesAnglesBtn" type="button" class="solver-toggle-btn">Off</button>
           </div>
         </div>
-      </details>
-      <details class="top-legend style-legend">
+        </details>
+        <details class="top-legend style-legend">
         <summary>Style</summary>
         <div class="legend-panel style-panel">
           <div class="color-control" aria-label="Color picker">
@@ -110,8 +177,8 @@
             </div>
           </div>
         </div>
-      </details>
-      <details class="top-shortcuts">
+        </details>
+        <details class="top-shortcuts">
         <summary>Help</summary>
         <ul class="shortcut-list">
           <li><span class="shortcut-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 17l4-10h8l4 10"/><path d="M9.5 13h5"/></svg></span><span class="keycap">A</span><span>Auto snap</span></li>
@@ -135,14 +202,15 @@
           <li><span class="shortcut-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/><circle cx="12" cy="12" r="7" fill="none"/></svg></span><span class="keycap">0</span><span>Alt angle view (same as double-click point)</span></li>
           <li><span class="shortcut-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h10"/></svg></span><span class="keycap">⌘/Ctrl+Enter</span><span>Send AI prompt</span></li>
         </ul>
-      </details>
+        </details>
+      </nav>
     </header>
 
     <div class="app-shell">
       <aside class="controlbar">
         <div class="tool-grid">
-          <div class="tool-group">
-            <p class="tool-group-title">Actions</p>
+          <details class="tool-group tool-menu" open>
+            <summary class="tool-group-title">Actions</summary>
             <div class="tools utility-tools">
               <button id="selectBtn" class="is-active" type="button">
                 <span class="tool-icon" aria-hidden="true">
@@ -174,12 +242,6 @@
                 </span>
                 <span class="tool-label">Clear</span>
               </button>
-              <button id="copyBtn" type="button">
-                <span class="tool-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24" focusable="false"><rect x="9" y="8" width="10" height="12" rx="2"/><path d="M7 16H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1"/></svg>
-                </span>
-                <span class="tool-label">Copy Markup</span>
-              </button>
               <button id="rebuildVerticesBtn" type="button">
                 <span class="tool-icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24" focusable="false" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="12" cy="18" r="2"/><path d="M8 7.5l2.8 7"/><path d="M16 7.5l-2.8 7"/><path d="M8 6h8"/></svg>
@@ -193,10 +255,10 @@
                 <span class="tool-label">Remove Vertices</span>
               </button>
             </div>
-          </div>
+          </details>
 
-          <div class="tool-group">
-            <p class="tool-group-title">Draw</p>
+          <details class="tool-group tool-menu" open>
+            <summary class="tool-group-title">Draw</summary>
             <div class="tools primary-tools">
               <button id="lineBtn" type="button">
                 <span class="tool-icon" aria-hidden="true">
@@ -235,7 +297,7 @@
                 <span class="tool-label">Angle</span>
               </button>
             </div>
-          </div>
+          </details>
         </div>
 
         <div class="sidebar-divider"></div>
@@ -243,76 +305,24 @@
 
       <main class="layout">
         <section class="card canvas-card">
-          <div class="card-title">Canvas</div>
+          <div class="card-title canvas-title-bar">
+            <span class="canvas-title-text">Canvas</span>
+            <div class="canvas-live" aria-live="polite">
+              <div class="live-chip">
+                <span class="live-label">Status</span>
+                <div id="status" class="status">Ready</div>
+              </div>
+              <div class="live-chip">
+                <span class="live-label">Snap</span>
+                <div id="snapInfo" class="snap-info">Snap mode: auto | target: none</div>
+              </div>
+            </div>
+          </div>
           <div class="canvas-wrap">
             <canvas id="drawCanvas" width="1100" height="700"></canvas>
           </div>
         </section>
 
-        <div class="right-column">
-          <section class="card ai-card">
-            <div class="card-title">AI Draw</div>
-            <div class="ai-body">
-              <textarea id="aiPrompt" spellcheck="true" placeholder="Describe what to draw… e.g. &quot;draw a right triangle with legs 150 and 200 centred on the canvas&quot;"></textarea>
-              <div class="ai-controls-row">
-                <label class="ai-model-label" for="aiModelSelect">
-                  <span class="ai-control-title">Model</span>
-                  <select id="aiModelSelect" class="ai-model-select" aria-label="Select AI model">
-                    <option value="gpt-4o-mini">GPT-4o mini</option>
-                    <option value="gpt-4o">GPT-4o</option>
-                  </select>
-                </label>
-              </div>
-              <div class="ai-image-panel">
-                <label class="ai-model-label" for="aiImageInput">
-                  <span class="ai-control-title">Reference Image</span>
-                  <input id="aiImageInput" class="ai-image-input" type="file" accept="image/*" aria-label="Choose a reference image for AI drawing" />
-                </label>
-                <div id="aiImagePreviewWrap" class="ai-image-preview-wrap is-empty">
-                  <img id="aiImagePreview" class="ai-image-preview" alt="Reference preview" />
-                  <span id="aiImageMeta" class="ai-image-meta">No image selected.</span>
-                </div>
-              </div>
-              <div class="ai-actions">
-                <label class="ai-mode-label">
-                  <input type="checkbox" id="aiAppend" checked />
-                  Append to canvas
-                </label>
-                <button id="aiSendBtn" type="button" class="ai-send-btn">Generate</button>
-              </div>
-              <div class="ai-secondary-actions">
-                <button id="aiUseImageBtn" type="button" class="ai-image-canvas-btn">Load Image as Background</button>
-              </div>
-              <label class="ai-mode-label">
-                <input type="checkbox" id="aiDebugOverlay" checked />
-                Show detection debug overlay
-              </label>
-              <div id="aiStatus" class="ai-status"></div>
-              <div class="ai-secondary-actions">
-                <button id="aiRemoveImageBtn" type="button" class="ai-image-canvas-btn">Remove Background Image</button>
-              </div>
-            </div>
-          </section>
-
-          <section class="card markup-card">
-            <span class="resize-handle resize-tl"></span>
-            <span class="resize-handle resize-tr"></span>
-            <span class="resize-handle resize-bl"></span>
-            <span class="resize-handle resize-br"></span>
-            <div class="card-title">
-              Live Markup
-              <div class="markup-title-actions">
-                <button id="markupLoadBtn" type="button" class="markup-action-btn">Load</button>
-                <button id="markupSaveBtn" type="button" class="markup-action-btn">Save</button>
-                <button id="markupFloatBtn" type="button" class="markup-action-btn" title="Float / Dock">&#8599;</button>
-              </div>
-            </div>
-            <div class="markup-editor-wrap">
-              <div id="markupHighlightLayer" aria-hidden="true"></div>
-              <textarea id="markupOutput" spellcheck="false" wrap="off" placeholder="Type markup here…"></textarea>
-            </div>
-          </section>
-        </div>
       </main>
     </div>
 
