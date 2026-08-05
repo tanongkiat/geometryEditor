@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Geometry Markup Studio</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="texture"></div>
+    <header class="app-header">
+      <h1>Geometry Markup Studio</h1>
+      <p>Draw and inspect your custom geometry markup in real time.</p>
+      <div class="toolbar">
+        <button id="loadBtn" type="button">Load</button>
+        <button id="saveBtn" type="button">Save</button>
+        <button id="renderBtn" type="button">Render</button>
+        <button id="downloadBtn" type="button">Download SVG</button>
+        <button type="button" onclick="window.location.href='/canvas'">Blank Canvas</button>
+        <button id="selectModeBtn" type="button" class="mode-btn is-active">Inspect</button>
+        <button id="lineModeBtn" type="button" class="mode-btn">Draw Line</button>
+        <button id="circleModeBtn" type="button" class="mode-btn">Draw Circle</button>
+        <button id="cancelDrawBtn" type="button" class="mode-btn">Cancel</button>
+      </div>
+      <div id="status" class="status">Starting...</div>
+      <div id="snapInfo" class="snap-info">Snap: none</div>
+    </header>
+
+    <main class="layout">
+      <section class="panel editor-panel">
+        <div class="panel-title">Markup</div>
+        <textarea id="markupInput" spellcheck="false"></textarea>
+      </section>
+
+      <section class="panel preview-panel">
+        <div class="panel-title">Preview</div>
+        <div class="stats" id="stats"></div>
+        <div class="svg-wrap" id="svgWrap">
+          <div id="svgViewport" class="svg-viewport"></div>
+        </div>
+      </section>
+
+      <section class="panel inspect-panel">
+        <div class="panel-title">Inspector</div>
+        <div id="inspectHint" class="inspect-hint">Click any shape in the drawing to read its details.</div>
+        <pre id="inspectOutput" class="inspect-output"></pre>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Geometry Studio</title>
+    <link rel="stylesheet" href="/landing.css" />
+  </head>
+  <body>
+    <div class="orb orb-a"></div>
+    <div class="orb orb-b"></div>
+
+    <main class="page">
+      <!-- hero -->
+      <div class="hero">
+        <div class="logo" aria-hidden="true">
+          <svg viewBox="0 0 64 64" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="32" cy="32" r="22"/>
+            <path d="M10 32h44"/>
+            <path d="M32 10v44"/>
+            <circle cx="32" cy="32" r="5" fill="currentColor" stroke="none" opacity="0.25"/>
+            <circle cx="32" cy="32" r="2.5" fill="currentColor" stroke="none"/>
+          </svg>
+        </div>
+        <p class="kicker">Geometry Studio</p>
+        <h1>Choose your workspace</h1>
+        <p>Draw, inspect, and export geometric figures — pick the mode that fits your workflow.</p>
+      </div>
+
+      <!-- mode cards -->
+      <div class="cards">
+        <!-- Blank Canvas -->
+        <a class="card" href="/canvas">
+          <div class="card-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="3"/>
+              <circle cx="9" cy="15" r="3"/>
+              <path d="M12 9l5 5"/>
+              <circle cx="17" cy="9" r="1.5" fill="currentColor" stroke="none"/>
+            </svg>
+          </div>
+          <div class="card-title">Blank Canvas</div>
+          <div class="card-desc">
+            Draw freely with point, line, and circle tools directly on an interactive canvas. Snap-assisted and ready to go.
+          </div>
+          <div class="card-cta">
+            Open canvas
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M5 12h14M13 6l6 6-6 6"/>
+            </svg>
+          </div>
+        </a>
+
+        <!-- SVG / Markup Mode -->
+        <a class="card" href="/studio">
+          <div class="card-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="4 7 4 4 20 4 20 7"/>
+              <line x1="9" y1="20" x2="15" y2="20"/>
+              <line x1="12" y1="4" x2="12" y2="20"/>
+              <circle cx="17" cy="15" r="3"/>
+              <path d="M5 12l4 4"/>
+            </svg>
+          </div>
+          <div class="card-title">SVG Mode</div>
+          <div class="card-desc">
+            Write geometry markup in the editor and get an interactive SVG preview with a live inspector panel.
+          </div>
+          <div class="card-cta">
+            Open studio
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M5 12h14M13 6l6 6-6 6"/>
+            </svg>
+          </div>
+        </a>
+      </div>
+
+      <p class="footer">Geometry Markup Studio</p>
+    </main>
+  </body>
+</html>

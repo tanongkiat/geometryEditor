@@ -1,0 +1,25 @@
+{
+  "name": "geometry-drawing-tools",
+  "version": "1.0.0",
+  "description": "Node.js tools for parsing geometry markup and rendering SVG drawings",
+  "main": "src/cli.js",
+  "bin": {
+    "geometry-draw": "src/cli.js"
+  },
+  "scripts": {
+    "draw": "node src/cli.js draw Markup.txt -o output.svg",
+    "inspect": "node src/cli.js inspect Markup.txt",
+    "serve": "node src/cli.js serve Markup.txt --port 3000",
+    "dev": "nodemon --watch src --watch public src/cli.js serve Markup.txt --port 3000"
+  },
+  "keywords": [
+    "geometry",
+    "svg",
+    "drawing",
+    "markup"
+  ],
+  "license": "MIT",
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}

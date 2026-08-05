@@ -1,0 +1,23 @@
+circle id=3 visible=1 cx=349 cy=423 r=196 color=#1a1a2e
+line id=1 visible=1 x1=224 y1=575 x2=217 y2=278 color=#1a1a2e
+line id=2.1 visible=1 x1=217 y1=278 x2=298 y2=367 color=#1a1a2e
+line id=2.2 visible=1 x1=298 y1=367 x2=349 y2=423 color=#1a1a2e
+line id=2.3 visible=1 x1=349 y1=423 x2=389 y2=467 color=#1a1a2e
+line id=2.4 visible=1 x1=389 y1=467 x2=481 y2=568 color=#1a1a2e
+point id=3 visible=1 x=217 y=278 color=#1a1a2e
+line id=4.1 visible=1 x1=224 y1=575 x2=298 y2=367 color=#1a1a2e
+line id=4.2 visible=1 x1=298 y1=367 x2=347 y2=227 color=#1a1a2e
+point id=5 visible=1 x=224 y=575 color=#1a1a2e
+point id=6 visible=1 x=298 y=367 color=#1a1a2e
+line id=7 visible=1 x1=347 y1=227 x2=538 y2=368 color=#1a1a2e
+point id=8 visible=1 x=347 y=227 color=#1a1a2e
+line id=9.1 visible=1 x1=538 y1=368 x2=389 y2=467 color=#1a1a2e
+line id=9.2 visible=1 x1=389 y1=467 x2=224 y2=575 color=#1a1a2e
+point id=10 visible=1 x=389 y=467 color=#1a1a2e
+point id=11 visible=1 x=538 y=368 color=#1a1a2e
+label id=12 visible=1 type=angle x=389 y=467 ang1=0.833 ang2=2.559 text=67° color=#1a1a2e
+label id=14 visible=1 type=angle x=224 y=575 ang1=4.687 ang2=5.051 text=14° color=#1a1a2e
+label id=15 visible=1 type=angle x=298 y=367 ang1=3.975 ang2=5.051 text=34° color=#1a1a2e
+label id=1 visible=1 type=angle x=347 y=227 ang1=0.639 ang2=1.909 text=x color=#1a1a2e
+label id=2 visible=1 type=angle x=538 y=368 ang1=2.559 ang2=3.781 text=y color=#1a1a2e
+line id=16 visible=1 x1=217 y1=278 x2=347 y2=227 color=#f59e0b

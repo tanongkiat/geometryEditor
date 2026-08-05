@@ -1,0 +1,247 @@
+:root {
+  --bg: #f8f3e7;
+  --panel: #fffdf7;
+  --ink: #1c2c24;
+  --muted: #5c6f65;
+  --accent: #0f766e;
+  --accent-2: #c2410c;
+  --line: #d8c9aa;
+  --shadow: 0 16px 44px rgba(56, 44, 24, 0.16);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+}
+
+body {
+  font-family: "Avenir Next", "Gill Sans", "Trebuchet MS", sans-serif;
+  color: var(--ink);
+  background: radial-gradient(circle at 85% 10%, #ffecd2, transparent 36%),
+    linear-gradient(140deg, #f5efe0 0%, #e9f4ef 52%, #f8f3e7 100%);
+  overflow: hidden;
+}
+
+.texture {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(15, 118, 110, 0.025),
+    rgba(15, 118, 110, 0.025) 2px,
+    transparent 2px,
+    transparent 10px
+  );
+}
+
+.app-header {
+  position: relative;
+  padding: 1.2rem 1.2rem 0.9rem;
+  z-index: 2;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-family: "Didot", "Bodoni 72", serif;
+  letter-spacing: 0.03em;
+  font-weight: 600;
+  font-size: clamp(1.8rem, 3.6vw, 2.8rem);
+}
+
+.app-header p {
+  margin: 0.35rem 0 0;
+  color: var(--muted);
+}
+
+.toolbar {
+  margin-top: 0.95rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+button {
+  border: 1px solid rgba(12, 88, 82, 0.22);
+  color: var(--ink);
+  background: linear-gradient(180deg, #ffffff, #f4f7f5);
+  border-radius: 10px;
+  padding: 0.48rem 0.85rem;
+  cursor: pointer;
+  font-weight: 600;
+  transition: transform 150ms ease, box-shadow 150ms ease, border-color 150ms ease;
+}
+
+button:hover {
+  transform: translateY(-1px);
+  border-color: rgba(12, 88, 82, 0.5);
+  box-shadow: 0 8px 20px rgba(18, 79, 74, 0.15);
+}
+
+.mode-btn.is-active {
+  border-color: rgba(194, 65, 12, 0.58);
+  color: #6f2505;
+  background: linear-gradient(180deg, #fff7ee, #fce9d8);
+}
+
+.status {
+  margin-top: 0.65rem;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.snap-info {
+  margin-top: 0.35rem;
+  color: #0b5e57;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.layout {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) minmax(380px, 1.3fr) minmax(260px, 0.85fr);
+  gap: 0.9rem;
+  padding: 0 1.2rem 1.2rem;
+  height: calc(100vh - 180px);
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  animation: panelIn 520ms ease both;
+}
+
+.editor-panel {
+  animation-delay: 20ms;
+}
+
+.preview-panel {
+  animation-delay: 80ms;
+}
+
+.inspect-panel {
+  animation-delay: 140ms;
+}
+
+.panel-title {
+  font-family: "Didot", "Bodoni 72", serif;
+  font-size: 1.08rem;
+  letter-spacing: 0.03em;
+  padding: 0.82rem 0.95rem;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(90deg, rgba(15, 118, 110, 0.07), rgba(194, 65, 12, 0.06));
+}
+
+#markupInput {
+  flex: 1;
+  border: none;
+  outline: none;
+  resize: none;
+  padding: 0.95rem;
+  font-family: "Menlo", "Consolas", monospace;
+  font-size: 0.92rem;
+  line-height: 1.45;
+  background: #fffef9;
+  color: #1e231f;
+}
+
+.stats {
+  padding: 0.72rem 0.95rem 0;
+  color: #3b4a42;
+  font-size: 0.94rem;
+}
+
+.svg-wrap {
+  flex: 1;
+  padding: 0.72rem 0.95rem 0.95rem;
+  min-height: 0;
+}
+
+.svg-viewport {
+  height: 100%;
+  border-radius: 12px;
+  overflow: auto;
+  border: 1px solid #dcccae;
+  background: #fff;
+}
+
+.svg-viewport.is-drawing {
+  cursor: crosshair;
+}
+
+.svg-viewport svg {
+  display: block;
+  max-width: 100%;
+}
+
+.svg-viewport [data-item-index] {
+  cursor: pointer;
+}
+
+.svg-viewport .selected-item {
+  filter: drop-shadow(0 0 6px rgba(194, 65, 12, 0.45));
+  stroke: var(--accent-2);
+  stroke-width: 4;
+}
+
+.inspect-hint {
+  padding: 0.75rem 0.95rem 0;
+  font-size: 0.95rem;
+  color: #5f6e65;
+}
+
+.inspect-output {
+  flex: 1;
+  margin: 0;
+  min-height: 0;
+  overflow: auto;
+  border-top: 1px solid var(--line);
+  padding: 0.95rem;
+  font-size: 0.86rem;
+  line-height: 1.42;
+  background: #fffef9;
+}
+
+@keyframes panelIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 1120px) {
+  body {
+    overflow: auto;
+  }
+
+  .layout {
+    grid-template-columns: 1fr;
+    height: auto;
+    min-height: calc(100vh - 180px);
+  }
+
+  .panel {
+    min-height: 260px;
+  }
+
+  .preview-panel {
+    min-height: 420px;
+  }
+}
