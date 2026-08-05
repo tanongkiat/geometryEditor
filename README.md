@@ -9,7 +9,7 @@ Each line starts with a shape type followed by key/value pairs:
 - `line id=1 visible=1 x1=10 y1=20 x2=30 y2=40 color=#111111`
 - `circle id=2 visible=1 cx=100 cy=120 r=40 color=#111111`
 - `point id=3 visible=1 x=20 y=30 color=#111111`
-- `label id=4 visible=1 type=angle x=200 y=200 ang1=0.1 ang2=1.2 text=67° color=#111111`
+- `label id=4 visible=1 type=angle x=200 y=200 r=48 ang1=0.1 ang2=1.2 text=63° size=16 color=#111111`
 
 ## Usage
 
@@ -52,8 +52,19 @@ Blank start canvas mode:
 
 - Open: `http://localhost:3000/canvas`
 - Starts empty (no markup preloaded)
+- Use the top-bar `Load` and `Save` buttons for the same markup file workflow available inside Live Markup; Save asks for a filename and adds `.txt` when needed
+- Set `Label Text Size` in Style from 8–120 px; it applies to the next label and immediately updates selected text or angle labels
+- Open `/playback` from the first page to load multiple markup files as ordered steps, move through them manually or automatically, and optionally accumulate each file into the preceding geometry
 - Canvas keeps a fixed `11:7` width-height ratio during resize
 - Use `Line` and `Circle` tools to draw on a real HTML canvas
+- Use `Angle Curve` to press on one snapped line, drag along a second intersecting line, and release to create a persistent measured angle arc; solid Vertices Lines are valid snap targets too
+- Press `Q` before drawing to switch Angle Curve between automatic degree labels and plain arcs
+- In `Move` mode, click geometry once to select it; on the next interaction, drag the selected geometry to reposition it
+- When `Vertices Lines` is on, choose a Style color and click a dashed helper line in `Select` mode to make it solid; every solid helper line keeps the color active when it was selected
+- Turning `Vertices Lines` on temporarily changes Style to the default orange; turning it off restores the Style color that was active before
+- Double-click a solid Vertices Line in `Select` mode and confirm to convert it into permanent line markup while retaining its saved color
+- Turn on `Keep Selected Lines` in Solver to keep solid selected helper lines visible when `Vertices Lines` is turned off while hiding the dashed unselected lines
+- The top-bar `Calculator` legend supports full keyboard entry and evaluates arithmetic, powers, parentheses, square roots, degree-based trigonometry, logarithms, π, implicit multiplication, and the previous answer
 - In `Select` mode, detected point dots are ignored; click each detected line or circle in a loaded background image to convert it into editable geometry
 - Detected lines inside circles stay independently selectable, with endpoints snapped to nearby circle perimeters or intersecting lines
 - Use `Delete` or `Backspace` to remove a selected background image

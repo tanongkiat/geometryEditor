@@ -11,6 +11,11 @@ function getColor(properties) {
   return properties.color || "#111111";
 }
 
+function getLabelSize(properties, fallback = 16) {
+  const size = Number(properties.size);
+  return Number.isFinite(size) ? Math.max(8, Math.min(120, Math.round(size))) : fallback;
+}
+
 function buildDataAttributes(item, itemIndex, interactive) {
   if (!interactive) {
     return "";
@@ -69,7 +74,16 @@ function computeBounds(items) {
       includePoint(p.vx, p.vy);
       includePoint(p.fx, p.fy);
     } else if (item.shape === "label") {
-      includePoint(p.x, p.y);
+      const size = getLabelSize(p, p.type === "angle" ? 14 : 16);
+      if (p.type === "angle" && Number.isFinite(Number(p.r))) {
+        const extent = Math.max(1, Number(p.r)) + Math.max(36, size * 2);
+        includePoint(Number(p.x) - extent, Number(p.y) - extent);
+        includePoint(Number(p.x) + extent, Number(p.y) + extent);
+      } else {
+        const textWidth = String(p.text || "").length * size * 0.65;
+        includePoint(Number(p.x), Number(p.y) - size);
+        includePoint(Number(p.x) + textWidth, Number(p.y) + size);
+      }
     }
   }
 
@@ -87,13 +101,15 @@ function renderAngleLabel(properties, offsetX, offsetY, extraAttrs) {
   const a2 = Number(properties.ang2);
   const text = properties.text || "";
   const color = getColor(properties);
+  const size = getLabelSize(properties, 14);
 
   if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(a1) || !Number.isFinite(a2)) {
     return "";
   }
 
-  const arcRadius = 26;
-  const textRadius = 42;
+  const requestedRadius = Number(properties.r);
+  const arcRadius = Number.isFinite(requestedRadius) && requestedRadius >= 1 ? requestedRadius : 26;
+  const textRadius = arcRadius + Math.max(20, size * 1.2);
 
   const sx = x + Math.cos(a1) * arcRadius;
   const sy = y + Math.sin(a1) * arcRadius;
@@ -111,10 +127,13 @@ function renderAngleLabel(properties, offsetX, offsetY, extraAttrs) {
   const tx = x + Math.cos(mid) * textRadius;
   const ty = y + Math.sin(mid) * textRadius;
 
-  return [
-    `<path${extraAttrs} d="M ${sx.toFixed(2)} ${sy.toFixed(2)} A ${arcRadius} ${arcRadius} 0 ${largeArc} 1 ${ex.toFixed(2)} ${ey.toFixed(2)}" stroke="${color}" stroke-width="2" fill="none"/>`,
-    `<text${extraAttrs} x="${tx.toFixed(2)}" y="${ty.toFixed(2)}" fill="${color}" font-size="20" font-family="Georgia, serif" text-anchor="middle" dominant-baseline="middle">${escapeXml(text)}</text>`
-  ].join("\n");
+  const parts = [
+    `<path${extraAttrs} d="M ${sx.toFixed(2)} ${sy.toFixed(2)} A ${arcRadius} ${arcRadius} 0 ${largeArc} 1 ${ex.toFixed(2)} ${ey.toFixed(2)}" stroke="${color}" stroke-width="2" fill="none"/>`
+  ];
+  if (text) {
+    parts.push(`<text${extraAttrs} x="${tx.toFixed(2)}" y="${ty.toFixed(2)}" fill="${color}" font-size="${size}" font-family="Georgia, serif" text-anchor="middle" dominant-baseline="middle">${escapeXml(text)}</text>`);
+  }
+  return parts.join("\n");
 }
 
 function renderItem(item, offsetX, offsetY, itemIndex, interactive) {
@@ -176,7 +195,7 @@ function renderItem(item, offsetX, offsetY, itemIndex, interactive) {
       return renderAngleLabel(p, offsetX, offsetY, dataAttrs);
     }
 
-    return `<text${dataAttrs} x="${p.x + offsetX}" y="${p.y + offsetY}" fill="${getColor(p)}" font-size="20" font-family="Georgia, serif">${escapeXml(p.text || "")}</text>`;
+    return `<text${dataAttrs} x="${p.x + offsetX}" y="${p.y + offsetY}" fill="${getColor(p)}" font-size="${getLabelSize(p)}" font-family="Georgia, serif">${escapeXml(p.text || "")}</text>`;
   }
 
   return "";
@@ -186,7 +205,10 @@ function renderSvg(items, options = {}) {
   const padding = Number.isFinite(options.padding) ? options.padding : 40;
   const interactive = options.interactive === true;
   const includeXmlDeclaration = options.includeXmlDeclaration !== false;
-  const bounds = computeBounds(items);
+  const fixedViewport = options.fixedViewport === true;
+  const bounds = fixedViewport
+    ? { minX: 0, minY: 0, maxX: Number(options.width) || 1100, maxY: Number(options.height) || 700 }
+    : computeBounds(items);
 
   const contentWidth = Math.max(1, bounds.maxX - bounds.minX);
   const contentHeight = Math.max(1, bounds.maxY - bounds.minY);
@@ -194,8 +216,8 @@ function renderSvg(items, options = {}) {
   const width = Number.isFinite(options.width) ? options.width : Math.ceil(contentWidth + padding * 2);
   const height = Number.isFinite(options.height) ? options.height : Math.ceil(contentHeight + padding * 2);
 
-  const offsetX = padding - bounds.minX;
-  const offsetY = padding - bounds.minY;
+  const offsetX = fixedViewport ? 0 : padding - bounds.minX;
+  const offsetY = fixedViewport ? 0 : padding - bounds.minY;
 
   const body = items
     .map((item, index) => renderItem(item, offsetX, offsetY, index, interactive))

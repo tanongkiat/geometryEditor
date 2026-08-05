@@ -15,6 +15,7 @@ const circleBtn = document.getElementById("circleBtn");
 const parabolaBtn = document.getElementById("parabolaBtn");
 const labelBtn = document.getElementById("labelBtn");
 const angleBtn = document.getElementById("angleBtn");
+const angleCurveBtn = document.getElementById("angleCurveBtn");
 const deleteBtn = document.getElementById("deleteBtn");
 const undoBtn = document.getElementById("undoBtn");
 const clearBtn = document.getElementById("clearBtn");
@@ -28,13 +29,23 @@ const equationLegendTextEl = document.getElementById("equationLegendText");
 const equationLegendEditorEl = document.getElementById("equationLegendEditor");
 const solverLegendEl = document.getElementById("solverLegend");
 const verticesLinesBtn = document.getElementById("verticesLinesBtn");
+const keepSelectedLinesBtn = document.getElementById("keepSelectedLinesBtn");
 const allVerticesAnglesBtn = document.getElementById("allVerticesAnglesBtn");
+const calculatorLegendEl = document.getElementById("calculatorLegend");
+const calculatorExpressionEl = document.getElementById("calculatorExpression");
+const calculatorResultEl = document.getElementById("calculatorResult");
+const calculatorClearBtn = document.getElementById("calculatorClearBtn");
+const calculatorEqualsBtn = document.getElementById("calculatorEqualsBtn");
+const calculatorBackspaceBtn = document.getElementById("calculatorBackspaceBtn");
+const calculatorValueButtons = Array.from(document.querySelectorAll("[data-calculator-value]"));
 const colorPickerEl = document.getElementById("colorPicker");
 const colorHexEl = document.getElementById("colorHex");
+const labelSizeInputEl = document.getElementById("labelSizeInput");
 const quickColorButtons = Array.from(document.querySelectorAll(".quick-color-btn"));
 const topLegendDetailsEls = Array.from(document.querySelectorAll("details.top-legend, details.top-shortcuts"));
 
 let equationEditTimer = null;
+let calculatorLastAnswer = 0;
 
 if (equationLegendEditorEl) {
   equationLegendEditorEl.addEventListener("input", (event) => {
@@ -86,6 +97,8 @@ const state = {
   shapes: [],
   actions: [],
   color: "#1a1a2e",
+  labelTextSize: 16,
+  colorBeforeVertexLines: null,
   logicalWidth: 1100,
   logicalHeight: 700,
   snapRadius: 14,
@@ -98,11 +111,17 @@ const state = {
   anglePrecision: 0,
   showArcDiffs: false,
   showVertexLines: false,
+  solidVertexLineKeys: new Set(),
+  vertexLineColors: new Map(),
+  keepSelectedVertexLines: false,
   showAllVertexAngles: false,
   equationEditMode: false,
   parabolaDrafting: false,
   parabolaStage: null,
   parabolaVertexPoint: null,
+  angleCurveStartTarget: null,
+  angleCurveDraft: null,
+  angleCurveAutoLabel: true,
   referenceImage: null,
   referenceImageSelected: false,
   imageCirclePick: null,
@@ -175,15 +194,17 @@ function closeTopLegendsOnOutsideClick(event) {
 }
 
 function syncSolverUi() {
-  if (!verticesLinesBtn || !allVerticesAnglesBtn) {
+  if (!verticesLinesBtn || !keepSelectedLinesBtn || !allVerticesAnglesBtn) {
     return;
   }
 
   verticesLinesBtn.classList.toggle("is-active", state.showVertexLines);
   verticesLinesBtn.textContent = state.showVertexLines ? "On" : "Off";
+  keepSelectedLinesBtn.classList.toggle("is-active", state.keepSelectedVertexLines);
+  keepSelectedLinesBtn.textContent = state.keepSelectedVertexLines ? "On" : "Off";
   allVerticesAnglesBtn.classList.toggle("is-active", state.showAllVertexAngles);
   allVerticesAnglesBtn.textContent = state.showAllVertexAngles ? "On" : "Off";
-  if (solverLegendEl && (state.showVertexLines || state.showAllVertexAngles)) {
+  if (solverLegendEl && (state.showVertexLines || state.keepSelectedVertexLines || state.showAllVertexAngles)) {
     solverLegendEl.open = true;
   }
 }
@@ -215,11 +236,384 @@ function setDrawingColor(value) {
   return true;
 }
 
+function normalizeLabelTextSize(value, fallback = 16) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(8, Math.min(120, Math.round(parsed)));
+}
+
+function getLabelTextSize(shape) {
+  return normalizeLabelTextSize(shape?.size, shape?.labelType === "angle" ? 14 : 16);
+}
+
+function syncLabelTextSizeUi() {
+  if (labelSizeInputEl) {
+    labelSizeInputEl.value = String(state.labelTextSize);
+  }
+}
+
+function syncLabelTextSizeFromSelection() {
+  const selectedLabels = Array.from(state.selection).filter((shape) => shape.type === "label");
+  if (selectedLabels.length === 0) return;
+  const sizes = new Set(selectedLabels.map(getLabelTextSize));
+  if (sizes.size === 1) {
+    state.labelTextSize = sizes.values().next().value;
+    syncLabelTextSizeUi();
+  }
+}
+
+function setLabelTextSize(value) {
+  const size = normalizeLabelTextSize(value, state.labelTextSize);
+  state.labelTextSize = size;
+  syncLabelTextSizeUi();
+
+  const selectedLabels = Array.from(state.selection).filter((shape) => shape.type === "label");
+  if (selectedLabels.length === 0) {
+    setStatus(`Label text size set to ${size}px for new labels.`);
+    return;
+  }
+
+  pushUndoSnapshot();
+  for (const shape of selectedLabels) {
+    shape.size = size;
+  }
+  rebuildMarkup();
+  highlightMarkupForShapes(state.selection, { scroll: false });
+  render();
+  setStatus(`Set ${selectedLabels.length} selected label${selectedLabels.length === 1 ? "" : "s"} to ${size}px.`);
+}
+
+function tokenizeCalculatorExpression(expression) {
+  const input = String(expression || "")
+    .toLowerCase()
+    .replace(/×/g, "*")
+    .replace(/÷/g, "/")
+    .replace(/[−–—]/g, "-")
+    .replace(/π/g, "pi");
+  const tokens = [];
+  let cursor = 0;
+
+  while (cursor < input.length) {
+    const char = input[cursor];
+    if (/\s/.test(char)) {
+      cursor += 1;
+      continue;
+    }
+
+    const numberMatch = input.slice(cursor).match(/^(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?/i);
+    if (numberMatch) {
+      tokens.push({ type: "number", value: Number(numberMatch[0]) });
+      cursor += numberMatch[0].length;
+      continue;
+    }
+
+    const nameMatch = input.slice(cursor).match(/^[a-z]+/);
+    if (nameMatch) {
+      tokens.push({ type: "name", value: nameMatch[0] });
+      cursor += nameMatch[0].length;
+      continue;
+    }
+
+    if ("+-*/^()".includes(char)) {
+      tokens.push({ type: "symbol", value: char });
+      cursor += 1;
+      continue;
+    }
+
+    throw new Error(`Unsupported character “${char}”.`);
+  }
+
+  const functionNames = new Set(["sin", "cos", "tan", "sqrt", "abs", "log", "ln"]);
+  const expanded = [];
+  const endsValue = (token) => token && (
+    token.type === "number" ||
+    token.value === ")" ||
+    (token.type === "name" && (token.value === "pi" || token.value === "ans"))
+  );
+  const startsValue = (token) => token && (
+    token.type === "number" ||
+    token.type === "name" ||
+    token.value === "("
+  );
+
+  for (const token of tokens) {
+    const previous = expanded[expanded.length - 1];
+    const isFunctionCall = previous?.type === "name" && functionNames.has(previous.value) && token.value === "(";
+    if (endsValue(previous) && startsValue(token) && !isFunctionCall) {
+      expanded.push({ type: "symbol", value: "*" });
+    }
+    expanded.push(token);
+  }
+
+  return expanded;
+}
+
+function evaluateCalculatorExpression(expression, lastAnswer = 0) {
+  const tokens = tokenizeCalculatorExpression(expression);
+  if (tokens.length === 0) {
+    throw new Error("Enter an expression.");
+  }
+
+  let cursor = 0;
+  const current = () => tokens[cursor] || null;
+  const takeSymbol = (symbol) => {
+    if (current()?.type === "symbol" && current().value === symbol) {
+      cursor += 1;
+      return true;
+    }
+    return false;
+  };
+  const expectSymbol = (symbol) => {
+    if (!takeSymbol(symbol)) {
+      throw new Error(`Expected “${symbol}”.`);
+    }
+  };
+
+  const applyFunction = (name, value) => {
+    const radians = value * Math.PI / 180;
+    if (name === "sin") return Math.sin(radians);
+    if (name === "cos") return Math.cos(radians);
+    if (name === "tan") return Math.tan(radians);
+    if (name === "sqrt") return Math.sqrt(value);
+    if (name === "abs") return Math.abs(value);
+    if (name === "log") return Math.log10(value);
+    if (name === "ln") return Math.log(value);
+    throw new Error(`Unknown function “${name}”.`);
+  };
+
+  const parsePrimary = () => {
+    const token = current();
+    if (!token) {
+      throw new Error("Expression is incomplete.");
+    }
+
+    if (token.type === "number") {
+      cursor += 1;
+      return token.value;
+    }
+
+    if (takeSymbol("(")) {
+      const value = parseExpression();
+      expectSymbol(")");
+      return value;
+    }
+
+    if (token.type === "name") {
+      cursor += 1;
+      if (token.value === "pi") return Math.PI;
+      if (token.value === "ans") return lastAnswer;
+      expectSymbol("(");
+      const value = parseExpression();
+      expectSymbol(")");
+      return applyFunction(token.value, value);
+    }
+
+    throw new Error(`Unexpected “${token.value}”.`);
+  };
+
+  const parsePower = () => {
+    const base = parsePrimary();
+    return takeSymbol("^") ? Math.pow(base, parseUnary()) : base;
+  };
+
+  const parseUnary = () => {
+    if (takeSymbol("+")) return parseUnary();
+    if (takeSymbol("-")) return -parseUnary();
+    return parsePower();
+  };
+
+  const parseTerm = () => {
+    let value = parseUnary();
+    while (current()?.value === "*" || current()?.value === "/") {
+      const operator = current().value;
+      cursor += 1;
+      const right = parseUnary();
+      value = operator === "*" ? value * right : value / right;
+    }
+    return value;
+  };
+
+  function parseExpression() {
+    let value = parseTerm();
+    while (current()?.value === "+" || current()?.value === "-") {
+      const operator = current().value;
+      cursor += 1;
+      const right = parseTerm();
+      value = operator === "+" ? value + right : value - right;
+    }
+    return value;
+  }
+
+  const result = parseExpression();
+  if (cursor < tokens.length) {
+    throw new Error(`Unexpected “${current().value}”.`);
+  }
+  if (!Number.isFinite(result)) {
+    throw new Error("Result is not a finite number.");
+  }
+  return result;
+}
+
+function formatCalculatorResult(value) {
+  const absolute = Math.abs(value);
+  if ((absolute >= 1e12 || (absolute > 0 && absolute < 1e-10))) {
+    return value.toExponential(10).replace(/\.0+(?=e)/, "");
+  }
+  return String(Number(value.toFixed(12)));
+}
+
+function showCalculatorResult(text, isError = false) {
+  if (!calculatorResultEl) return;
+  calculatorResultEl.textContent = text;
+  calculatorResultEl.classList.toggle("is-error", isError);
+}
+
+function insertCalculatorValue(value) {
+  if (!calculatorExpressionEl) return;
+  const start = calculatorExpressionEl.selectionStart ?? calculatorExpressionEl.value.length;
+  const end = calculatorExpressionEl.selectionEnd ?? start;
+  calculatorExpressionEl.setRangeText(value, start, end, "end");
+  calculatorExpressionEl.focus();
+}
+
+function focusCalculatorExpression() {
+  if (!calculatorExpressionEl) return;
+  calculatorExpressionEl.focus();
+  const end = calculatorExpressionEl.value.length;
+  calculatorExpressionEl.setSelectionRange(end, end);
+}
+
+function clearCalculator() {
+  if (calculatorExpressionEl) {
+    calculatorExpressionEl.value = "";
+    calculatorExpressionEl.focus();
+  }
+  showCalculatorResult("0");
+}
+
+function backspaceCalculator() {
+  if (!calculatorExpressionEl) return;
+  const start = calculatorExpressionEl.selectionStart ?? calculatorExpressionEl.value.length;
+  const end = calculatorExpressionEl.selectionEnd ?? start;
+  const deleteFrom = start === end ? Math.max(0, start - 1) : start;
+  calculatorExpressionEl.setRangeText("", deleteFrom, end, "end");
+  calculatorExpressionEl.focus();
+}
+
+function runCalculator() {
+  if (!calculatorExpressionEl) return;
+  try {
+    calculatorLastAnswer = evaluateCalculatorExpression(calculatorExpressionEl.value, calculatorLastAnswer);
+    showCalculatorResult(formatCalculatorResult(calculatorLastAnswer));
+  } catch (error) {
+    showCalculatorResult(error.message, true);
+  }
+}
+
+for (const button of calculatorValueButtons) {
+  button.addEventListener("click", () => insertCalculatorValue(button.getAttribute("data-calculator-value") || ""));
+}
+
+calculatorEqualsBtn?.addEventListener("click", runCalculator);
+calculatorClearBtn?.addEventListener("click", clearCalculator);
+calculatorBackspaceBtn?.addEventListener("click", backspaceCalculator);
+calculatorLegendEl?.addEventListener("toggle", () => {
+  if (calculatorLegendEl.open) {
+    requestAnimationFrame(focusCalculatorExpression);
+  }
+});
+calculatorExpressionEl?.addEventListener("keydown", (event) => {
+  if (event.key === "x" || event.key === "X") {
+    event.preventDefault();
+    insertCalculatorValue("*");
+  } else if (event.key === "Enter" || event.key === "=") {
+    event.preventDefault();
+    runCalculator();
+  } else if (event.key === "Escape") {
+    event.preventDefault();
+    clearCalculator();
+  }
+});
+
+window.addEventListener("keydown", (event) => {
+  if (!calculatorLegendEl?.open || event.defaultPrevented) return;
+
+  const target = event.target;
+  const isCalculatorInput = target === calculatorExpressionEl;
+  const isOtherEditable = !isCalculatorInput && (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement ||
+    target?.isContentEditable
+  );
+  if (isCalculatorInput || isOtherEditable || event.metaKey || event.ctrlKey || event.altKey) return;
+
+  if (event.key === "Enter" || event.key === "=") {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    runCalculator();
+    return;
+  }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    clearCalculator();
+    return;
+  }
+  if (event.key === "Backspace") {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    backspaceCalculator();
+    return;
+  }
+
+  const key = event.key === "x" || event.key === "X" ? "*" : event.key;
+  if (/^[0-9a-wyzA-WYZ.+\-*/^()]$/.test(key) || key === "π") {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    insertCalculatorValue(key);
+  }
+});
+
 function toggleVertexLines() {
-  state.showVertexLines = !state.showVertexLines;
+  cancelPendingVertexHelperClick();
+  if (!state.showVertexLines) {
+    state.colorBeforeVertexLines = state.color;
+    state.showVertexLines = true;
+    setDrawingColor("#f97316");
+  } else {
+    state.showVertexLines = false;
+    if (!state.keepSelectedVertexLines) {
+      state.solidVertexLineKeys.clear();
+      state.vertexLineColors.clear();
+    }
+    const priorColor = state.colorBeforeVertexLines;
+    state.colorBeforeVertexLines = null;
+    if (priorColor) {
+      setDrawingColor(priorColor);
+    }
+  }
   syncSolverUi();
   render(state.lastPointerPoint);
-  setStatus(`Vertices lines ${state.showVertexLines ? "on" : "off"}.`);
+  setStatus(state.showVertexLines
+    ? "Vertices lines on. Style temporarily changed to default orange. In Select mode, click a helper line to toggle it between dashed and solid."
+    : state.keepSelectedVertexLines && state.solidVertexLineKeys.size > 0
+      ? `Vertices lines off. Solid selected lines remain visible; Style restored to ${state.color.toUpperCase()}.`
+      : `Vertices lines off. Style restored to ${state.color.toUpperCase()}.`);
+}
+
+function toggleKeepSelectedVertexLines() {
+  state.keepSelectedVertexLines = !state.keepSelectedVertexLines;
+  if (!state.keepSelectedVertexLines && !state.showVertexLines) {
+    state.solidVertexLineKeys.clear();
+    state.vertexLineColors.clear();
+  }
+
+  syncSolverUi();
+  render(state.lastPointerPoint);
+  setStatus(state.keepSelectedVertexLines
+    ? "Keep Selected Lines on. Solid lines will remain when Vertices Lines is turned off."
+    : "Keep Selected Lines off.");
 }
 
 function toggleAllVertexAngles() {
@@ -302,7 +696,21 @@ function snapStrokeColor(kind) {
   return "#0f766e";
 }
 
+function toggleAngleCurveAutoLabel() {
+  state.angleCurveAutoLabel = !state.angleCurveAutoLabel;
+  if (state.angleCurveDraft) {
+    state.angleCurveDraft.text = state.angleCurveAutoLabel
+      ? `${formatAngle(positiveAngleDelta(state.angleCurveDraft.ang1, state.angleCurveDraft.ang2) * 180 / Math.PI)}°`
+      : "";
+    render(state.lastPointerPoint);
+  }
+  setStatus(state.angleCurveAutoLabel
+    ? "Angle Curve automatic labels on (Q)."
+    : "Angle Curve plain curve mode on; automatic labels off (Q).");
+}
+
 function setMode(mode) {
+  cancelPendingVertexHelperClick();
   state.mode = mode;
   state.draftPoint = null;
   state.draftCurrentPoint = null;
@@ -313,6 +721,8 @@ function setMode(mode) {
   state.parabolaDrafting = false;
   state.parabolaStage = null;
   state.parabolaVertexPoint = null;
+  state.angleCurveStartTarget = null;
+  state.angleCurveDraft = null;
   state.moveDragPoint = null;
   state.moveDidChange = false;
   state.equationEditMode = false;
@@ -328,6 +738,7 @@ function setMode(mode) {
   parabolaBtn.classList.toggle("is-active", mode === "parabola");
   labelBtn.classList.toggle("is-active", mode === "label");
   angleBtn.classList.toggle("is-active", mode === "angle");
+  angleCurveBtn.classList.toggle("is-active", mode === "angleCurve");
 
   if (mode === "line") {
     setSnapInfo(snapInfoText("target: none"));
@@ -356,8 +767,8 @@ function setMode(mode) {
   if (mode === "move") {
     setSnapInfo(snapInfoText("selected geometry"));
     setStatus(state.selection.size > 0
-      ? "Move mode: drag the selected geometry to reposition it."
-      : "Move mode: select geometry first, then drag it to reposition.");
+      ? "Move mode: drag the selected geometry to reposition it. Click different geometry to select it first."
+      : "Move mode: click geometry to select it, then drag it on the next interaction.");
     return;
   }
 
@@ -370,6 +781,12 @@ function setMode(mode) {
   if (mode === "angle") {
     setSnapInfo(snapInfoText("line mode only"));
     setStatus("Angle mode: click a point to calculate each connected ray angle to +X axis.");
+    return;
+  }
+
+  if (mode === "angleCurve") {
+    setSnapInfo(snapInfoText("target: line"));
+    setStatus(`Angle Curve mode (${state.angleCurveAutoLabel ? "auto label" : "plain curve"}): press on one snapped line, then drag along a second line and release. Press Q to toggle labels.`);
     return;
   }
 
@@ -1048,9 +1465,16 @@ function shapeToMarkup(shape) {
   }
 
   if (shape.type === "label") {
-    const rawText = String(shape.text || "Label");
-    const safeText = /\s|"/.test(rawText) ? `"${rawText.replace(/([\\"])/g, "\\$1")}"` : rawText;
-    return `label id=${shape.id} visible=1 type=text x=${formatNumber(shape.x)} y=${formatNumber(shape.y)} ang1=0 ang2=0 text=${safeText} color=${shape.color}`;
+    const rawText = shape.labelType === "angle"
+      ? String(shape.text ?? "")
+      : String(shape.text || "Label");
+    const safeText = rawText === "" || /\s|"/.test(rawText)
+      ? `"${rawText.replace(/([\\"])/g, "\\$1")}"`
+      : rawText;
+    if (shape.labelType === "angle") {
+      return `label id=${shape.id} visible=1 type=angle x=${formatNumber(shape.x)} y=${formatNumber(shape.y)} r=${formatNumber(shape.r)} ang1=${formatNumber(shape.ang1)} ang2=${formatNumber(shape.ang2)} text=${safeText} size=${getLabelTextSize(shape)} color=${shape.color}`;
+    }
+    return `label id=${shape.id} visible=1 type=text x=${formatNumber(shape.x)} y=${formatNumber(shape.y)} ang1=0 ang2=0 text=${safeText} size=${getLabelTextSize(shape)} color=${shape.color}`;
   }
 
   return "";
@@ -1099,7 +1523,13 @@ function parseMarkupLine(raw) {
   if (type === 'label') {
     const x = parseFloat(kv.x), y = parseFloat(kv.y);
     if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
-    return { type: 'label', id, x, y, text: kv.text || 'Label', color };
+    const size = normalizeLabelTextSize(kv.size, kv.type === 'angle' ? 14 : 16);
+    if (kv.type === 'angle') {
+      const r = parseFloat(kv.r), ang1 = parseFloat(kv.ang1), ang2 = parseFloat(kv.ang2);
+      if (!Number.isFinite(r) || r < 1 || !Number.isFinite(ang1) || !Number.isFinite(ang2)) return null;
+      return { type: 'label', labelType: 'angle', id, x, y, r, ang1, ang2, text: kv.text ?? '', size, color };
+    }
+    return { type: 'label', id, x, y, text: kv.text || 'Label', size, color };
   }
   return null;
 }
@@ -1197,8 +1627,67 @@ function drawAxes() {
   ctx.restore();
 }
 
+function positiveAngleDelta(startAngle, endAngle) {
+  const fullTurn = Math.PI * 2;
+  return ((endAngle - startAngle) % fullTurn + fullTurn) % fullTurn;
+}
+
+function angleCurveLabelPosition(shape) {
+  const delta = positiveAngleDelta(shape.ang1, shape.ang2);
+  const middle = shape.ang1 + delta / 2;
+  const textRadius = shape.r + Math.max(20, getLabelTextSize(shape) * 1.2);
+  return {
+    x: shape.x + Math.cos(middle) * textRadius,
+    y: shape.y + Math.sin(middle) * textRadius
+  };
+}
+
+function drawAngleCurveShape(shape, { dashed = false, glow = false } = {}) {
+  const radius = Number(shape.r);
+  const startAngle = Number(shape.ang1);
+  const endAngle = Number(shape.ang2);
+  if (!Number.isFinite(radius) || radius < 1 || !Number.isFinite(startAngle) || !Number.isFinite(endAngle)) {
+    return;
+  }
+
+  const labelPoint = angleCurveLabelPosition(shape);
+  ctx.save();
+  ctx.strokeStyle = shape.color;
+  ctx.fillStyle = shape.color;
+  ctx.lineWidth = glow ? 9 : 2.5;
+  ctx.globalAlpha = glow ? 0.35 : 1;
+  ctx.setLineDash(dashed ? [6, 5] : []);
+  ctx.beginPath();
+  ctx.arc(shape.x, shape.y, radius, startAngle, endAngle);
+  ctx.stroke();
+
+  if (!glow) {
+    ctx.setLineDash([]);
+    const labelText = String(shape.text ?? "");
+    if (labelText) {
+      ctx.font = `700 ${getLabelTextSize(shape)}px Inter, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.92)";
+      ctx.strokeText(labelText, labelPoint.x, labelPoint.y);
+      ctx.fillStyle = shape.color;
+      ctx.fillText(labelText, labelPoint.x, labelPoint.y);
+    }
+
+    if (dashed) {
+      for (const angle of [startAngle, endAngle]) {
+        ctx.beginPath();
+        ctx.arc(shape.x + Math.cos(angle) * radius, shape.y + Math.sin(angle) * radius, 4, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+  }
+  ctx.restore();
+}
+
 function drawShapes() {
-  if (state.showVertexLines) {
+  if (state.showVertexLines || (state.keepSelectedVertexLines && state.solidVertexLineKeys.size > 0)) {
     drawVertexLines();
   }
 
@@ -1220,10 +1709,13 @@ function drawShapes() {
         drawParabolaShape(shape, { glow: true });
       } else if (shape.type === "point") {
         ctx.beginPath(); ctx.arc(shape.x, shape.y, 10, 0, Math.PI * 2); ctx.fill();
+      } else if (shape.type === "label" && shape.labelType === "angle") {
+        drawAngleCurveShape(shape, { glow: true });
       } else if (shape.type === "label") {
-        ctx.font = "600 16px Inter, sans-serif";
+        const size = getLabelTextSize(shape);
+        ctx.font = `600 ${size}px Inter, sans-serif`;
         const w = ctx.measureText(String(shape.text || "Label")).width;
-        ctx.fillRect(shape.x - 3, shape.y - 11, w + 6, 18);
+        ctx.fillRect(shape.x - 4, shape.y - size * 0.7, w + 8, size * 1.4);
       }
       ctx.restore();
     }
@@ -1250,9 +1742,11 @@ function drawShapes() {
       ctx.beginPath();
       ctx.arc(shape.x, shape.y, 4, 0, Math.PI * 2);
       ctx.fill();
+    } else if (shape.type === "label" && shape.labelType === "angle") {
+      drawAngleCurveShape(shape);
     } else if (shape.type === "label") {
       ctx.fillStyle = shape.color;
-      ctx.font = "600 16px Inter, sans-serif";
+      ctx.font = `600 ${getLabelTextSize(shape)}px Inter, sans-serif`;
       ctx.textAlign = "left";
       ctx.textBaseline = "middle";
       ctx.fillText(String(shape.text || "Label"), shape.x, shape.y);
@@ -1260,6 +1754,7 @@ function drawShapes() {
 
     ctx.restore();
   }
+
 }
 
 function getUniqueVertexPoints() {
@@ -1269,12 +1764,170 @@ function getUniqueVertexPoints() {
       continue;
     }
 
-    const point = { x: shape.x, y: shape.y };
+    const point = { x: shape.x, y: shape.y, id: String(shape.id) };
     if (!points.some((candidate) => pointMatches(candidate, point))) {
       points.push(point);
     }
   }
+
+  const validLineKeys = new Set();
+  for (let i = 0; i < points.length; i += 1) {
+    for (let j = i + 1; j < points.length; j += 1) {
+      validLineKeys.add(vertexHelperLineKey(points[i], points[j]));
+    }
+  }
+  for (const key of state.solidVertexLineKeys) {
+    if (!validLineKeys.has(key)) {
+      state.solidVertexLineKeys.delete(key);
+      state.vertexLineColors.delete(key);
+    }
+  }
   return points;
+}
+
+function vertexHelperLineKey(first, second) {
+  return [String(first.id), String(second.id)].sort().join("::");
+}
+
+function findVertexHelperLineAt(point, tolerance = 9) {
+  const vertices = getUniqueVertexPoints();
+  if (vertices.some((vertex) => Math.hypot(point.x - vertex.x, point.y - vertex.y) <= 10)) {
+    return null;
+  }
+
+  let nearest = null;
+  let bestDistance = tolerance;
+  for (let i = 0; i < vertices.length; i += 1) {
+    for (let j = i + 1; j < vertices.length; j += 1) {
+      const first = vertices[i];
+      const second = vertices[j];
+      const lineDistance = distToSegment(point.x, point.y, first.x, first.y, second.x, second.y);
+      if (lineDistance <= bestDistance) {
+        bestDistance = lineDistance;
+        nearest = {
+          first,
+          second,
+          key: vertexHelperLineKey(first, second)
+        };
+      }
+    }
+  }
+  return nearest;
+}
+
+let vertexHelperClickTimer = null;
+let pendingVertexHelperClick = null;
+let recentlyDeselectedVertexHelper = null;
+
+function cancelPendingVertexHelperClick() {
+  clearTimeout(vertexHelperClickTimer);
+  vertexHelperClickTimer = null;
+  pendingVertexHelperClick = null;
+}
+
+function toggleVertexHelperLine(helperLine, point) {
+  const isSolid = !state.solidVertexLineKeys.has(helperLine.key);
+  if (isSolid) {
+    state.solidVertexLineKeys.add(helperLine.key);
+    state.vertexLineColors.set(helperLine.key, state.color);
+  } else {
+    recentlyDeselectedVertexHelper = {
+      key: helperLine.key,
+      color: state.vertexLineColors.get(helperLine.key) || state.color,
+      timestamp: Date.now()
+    };
+    state.solidVertexLineKeys.delete(helperLine.key);
+    state.vertexLineColors.delete(helperLine.key);
+  }
+
+  render(point);
+  setStatus(`Helper line is now ${isSolid ? `solid ${state.color.toUpperCase()}` : "dashed"}.`);
+  return true;
+}
+
+function queueVertexHelperLineToggle(point) {
+  if (!state.showVertexLines) {
+    return false;
+  }
+
+  const helperLine = findVertexHelperLineAt(point);
+  if (!helperLine) {
+    return false;
+  }
+
+  if (!state.solidVertexLineKeys.has(helperLine.key) && !pendingVertexHelperClick) {
+    toggleVertexHelperLine(helperLine, point);
+    return true;
+  }
+
+  if (pendingVertexHelperClick) {
+    const previous = pendingVertexHelperClick;
+    cancelPendingVertexHelperClick();
+    if (previous.helperLine.key === helperLine.key) {
+      return true;
+    }
+    toggleVertexHelperLine(previous.helperLine, previous.point);
+  }
+
+  pendingVertexHelperClick = { helperLine, point };
+  vertexHelperClickTimer = setTimeout(() => {
+    const pending = pendingVertexHelperClick;
+    vertexHelperClickTimer = null;
+    pendingVertexHelperClick = null;
+    if (pending) {
+      toggleVertexHelperLine(pending.helperLine, pending.point);
+    }
+  }, 420);
+  return true;
+}
+
+function convertSolidVertexHelperLineAt(point) {
+  const helperLine = findVertexHelperLineAt(point);
+  if (!helperLine) {
+    return false;
+  }
+
+  const isCurrentlySolid = state.solidVertexLineKeys.has(helperLine.key);
+  const pendingMatches = pendingVertexHelperClick?.helperLine.key === helperLine.key;
+  const recentMatch = pendingMatches &&
+    recentlyDeselectedVertexHelper?.key === helperLine.key &&
+    Date.now() - recentlyDeselectedVertexHelper.timestamp < 1200;
+  if (!isCurrentlySolid && !recentMatch) {
+    return false;
+  }
+
+  const color = isCurrentlySolid
+    ? state.vertexLineColors.get(helperLine.key) || state.color
+    : recentlyDeselectedVertexHelper.color;
+  cancelPendingVertexHelperClick();
+  if (!window.confirm("Do you want to change this solid Vertices Line to a permanent line?")) {
+    if (!isCurrentlySolid) {
+      state.solidVertexLineKeys.add(helperLine.key);
+      state.vertexLineColors.set(helperLine.key, color);
+      render(point);
+    }
+    setStatus("Solid helper line kept unchanged.");
+    return true;
+  }
+
+  const permanentLineId = getNextId();
+  pushUndoSnapshot();
+  state.solidVertexLineKeys.delete(helperLine.key);
+  state.vertexLineColors.delete(helperLine.key);
+  recentlyDeselectedVertexHelper = null;
+  addLineCore(helperLine.first, helperLine.second, color);
+  removeDuplicatePointShapes();
+
+  const addedLines = state.shapes.filter((shape) =>
+    shape.type === "line" && shapeBaseId(shape.id) === String(permanentLineId)
+  );
+  state.selection = new Set(addedLines);
+  rebuildMarkup();
+  updateEquationLegend();
+  highlightMarkupForShapes(state.selection, { scroll: false });
+  render(point);
+  setStatus(`Converted the solid helper into ${addedLines.length} permanent line segment${addedLines.length === 1 ? "" : "s"} using ${color.toUpperCase()}.`);
+  return true;
 }
 
 function drawVertexLines() {
@@ -1283,13 +1936,40 @@ function drawVertexLines() {
     return;
   }
 
+  if (state.showVertexLines) {
+    ctx.save();
+    ctx.strokeStyle = "rgba(154, 52, 18, 0.5)";
+    ctx.lineWidth = 1.4;
+    ctx.setLineDash([7, 6]);
+
+    for (let i = 0; i < points.length; i += 1) {
+      for (let j = i + 1; j < points.length; j += 1) {
+        ctx.beginPath();
+        ctx.moveTo(points[i].x, points[i].y);
+        ctx.lineTo(points[j].x, points[j].y);
+        ctx.stroke();
+      }
+    }
+
+    ctx.restore();
+  }
+
+  const solidLineKeys = state.solidVertexLineKeys;
+  if (solidLineKeys.size === 0) {
+    return;
+  }
+
   ctx.save();
-  ctx.strokeStyle = "rgba(154, 52, 18, 0.5)";
-  ctx.lineWidth = 1.4;
-  ctx.setLineDash([7, 6]);
+  ctx.lineWidth = 2.4;
+  ctx.setLineDash([]);
 
   for (let i = 0; i < points.length; i += 1) {
     for (let j = i + 1; j < points.length; j += 1) {
+      const key = vertexHelperLineKey(points[i], points[j]);
+      if (!solidLineKeys.has(key)) {
+        continue;
+      }
+      ctx.strokeStyle = state.vertexLineColors.get(key) || state.color;
       ctx.beginPath();
       ctx.moveTo(points[i].x, points[i].y);
       ctx.lineTo(points[j].x, points[j].y);
@@ -1436,13 +2116,15 @@ function drawDraft(mousePoint) {
         color: state.color
       }, { dashed: true });
     }
+  } else if (state.mode === "angleCurve" && state.angleCurveDraft) {
+    drawAngleCurveShape(state.angleCurveDraft, { dashed: true });
   }
 
   ctx.restore();
 }
 
 function drawSnapIndicator() {
-  if (state.mode !== "line" || !state.hoverPoint) {
+  if ((state.mode !== "line" && state.mode !== "angleCurve") || !state.hoverPoint) {
     return;
   }
 
@@ -2166,8 +2848,25 @@ function findShapeAtPoint(p, { includePoints = true } = {}) {
     for (const s of state.shapes)
       if (s.type === "point" && Math.hypot(p.x - s.x, p.y - s.y) <= HIT_PT) return s;
   }
-  for (const s of state.shapes)
-    if (s.type === "label" && Math.hypot(p.x - s.x, p.y - s.y) <= HIT_LABEL) return s;
+  for (const s of state.shapes) {
+    if (s.type !== "label") continue;
+    if (s.labelType === "angle") {
+      const labelPoint = angleCurveLabelPosition(s);
+      if (s.text && Math.hypot(p.x - labelPoint.x, p.y - labelPoint.y) <= Math.max(HIT_LABEL, getLabelTextSize(s))) return s;
+      const pointAngle = Math.atan2(p.y - s.y, p.x - s.x);
+      const pointDelta = positiveAngleDelta(s.ang1, pointAngle);
+      const arcDelta = positiveAngleDelta(s.ang1, s.ang2);
+      const radialDistance = Math.abs(Math.hypot(p.x - s.x, p.y - s.y) - s.r);
+      if (pointDelta <= arcDelta + 0.04 && radialDistance <= HIT_LINE + 3) return s;
+      continue;
+    }
+    const size = getLabelTextSize(s);
+    ctx.save();
+    ctx.font = `600 ${size}px Inter, sans-serif`;
+    const width = ctx.measureText(String(s.text || "Label")).width;
+    ctx.restore();
+    if (p.x >= s.x - 6 && p.x <= s.x + width + 6 && p.y >= s.y - size && p.y <= s.y + size) return s;
+  }
   for (const s of state.shapes)
     if (s.type === "line" && distToSegment(p.x, p.y, s.x1, s.y1, s.x2, s.y2) <= HIT_LINE) return s;
   for (const s of state.shapes)
@@ -2306,6 +3005,7 @@ function applySelectClick(hit) {
   }
 
   state.selection = selected;
+  syncLabelTextSizeFromSelection();
   state.equationEditMode = false;
   updateEquationLegend();
   highlightMarkupForShapes(selected);
@@ -2618,6 +3318,148 @@ function findNearestPointSnapTarget(point, radius) {
   }
 
   return nearest;
+}
+
+function getAngleCurveLineTargets() {
+  const targets = [];
+  for (let index = 0; index < state.shapes.length; index += 1) {
+    const shape = state.shapes[index];
+    if (shape.type !== "line") {
+      continue;
+    }
+    targets.push({
+      key: `shape:${index}`,
+      a: { x: shape.x1, y: shape.y1 },
+      b: { x: shape.x2, y: shape.y2 }
+    });
+  }
+
+  const vertices = getUniqueVertexPoints();
+  for (let i = 0; i < vertices.length; i += 1) {
+    for (let j = i + 1; j < vertices.length; j += 1) {
+      const helperKey = vertexHelperLineKey(vertices[i], vertices[j]);
+      if (!state.solidVertexLineKeys.has(helperKey)) {
+        continue;
+      }
+      targets.push({
+        key: `helper:${helperKey}`,
+        a: { x: vertices[i].x, y: vertices[i].y },
+        b: { x: vertices[j].x, y: vertices[j].y }
+      });
+    }
+  }
+  return targets;
+}
+
+function findNearestAngleCurveLineTarget(point, radius, excludedKey = null) {
+  let nearest = null;
+  let bestDistance = radius;
+  for (const target of getAngleCurveLineTargets()) {
+    if (target.key === excludedKey) {
+      continue;
+    }
+    const snappedPoint = closestPointOnSegment(point, target.a, target.b);
+    const targetDistance = distance(point, snappedPoint);
+    if (targetDistance <= bestDistance) {
+      bestDistance = targetDistance;
+      nearest = {
+        ...target,
+        x: snappedPoint.x,
+        y: snappedPoint.y,
+        kind: "line"
+      };
+    }
+  }
+  return nearest;
+}
+
+function intersectInfiniteLines(first, second) {
+  const firstDx = first.b.x - first.a.x;
+  const firstDy = first.b.y - first.a.y;
+  const secondDx = second.b.x - second.a.x;
+  const secondDy = second.b.y - second.a.y;
+  const denominator = cross(firstDx, firstDy, secondDx, secondDy);
+  if (Math.abs(denominator) < 1e-8) {
+    return null;
+  }
+  const offsetX = second.a.x - first.a.x;
+  const offsetY = second.a.y - first.a.y;
+  const firstT = cross(offsetX, offsetY, secondDx, secondDy) / denominator;
+  return {
+    x: first.a.x + firstT * firstDx,
+    y: first.a.y + firstT * firstDy
+  };
+}
+
+function pointWithinTargetSegment(point, target, tolerance = 1) {
+  return point.x >= Math.min(target.a.x, target.b.x) - tolerance &&
+    point.x <= Math.max(target.a.x, target.b.x) + tolerance &&
+    point.y >= Math.min(target.a.y, target.b.y) - tolerance &&
+    point.y <= Math.max(target.a.y, target.b.y) + tolerance;
+}
+
+function maxDistanceAlongTargetRay(center, target, angle) {
+  const direction = { x: Math.cos(angle), y: Math.sin(angle) };
+  let maximum = 0;
+  for (const endpoint of [target.a, target.b]) {
+    const dx = endpoint.x - center.x;
+    const dy = endpoint.y - center.y;
+    const projection = dx * direction.x + dy * direction.y;
+    if (projection > maximum) {
+      maximum = projection;
+    }
+  }
+  return maximum;
+}
+
+function buildAngleCurveDraft(startTarget, endTarget) {
+  if (!startTarget || !endTarget || startTarget.key === endTarget.key) {
+    return null;
+  }
+  const center = intersectInfiniteLines(startTarget, endTarget);
+  if (!center || !pointWithinTargetSegment(center, startTarget) || !pointWithinTargetSegment(center, endTarget)) {
+    return null;
+  }
+
+  const startDistance = Math.hypot(startTarget.x - center.x, startTarget.y - center.y);
+  const endDistance = Math.hypot(endTarget.x - center.x, endTarget.y - center.y);
+  if (startDistance < 3 || endDistance < 3) {
+    return null;
+  }
+
+  let startAngle = Math.atan2(startTarget.y - center.y, startTarget.x - center.x);
+  let endAngle = Math.atan2(endTarget.y - center.y, endTarget.x - center.x);
+  let firstRayTarget = startTarget;
+  let secondRayTarget = endTarget;
+  let delta = positiveAngleDelta(startAngle, endAngle);
+  if (delta > Math.PI) {
+    [startAngle, endAngle] = [endAngle, startAngle];
+    [firstRayTarget, secondRayTarget] = [secondRayTarget, firstRayTarget];
+    delta = Math.PI * 2 - delta;
+  }
+  if (delta < Math.PI / 180) {
+    return null;
+  }
+
+  const startRayLimit = maxDistanceAlongTargetRay(center, firstRayTarget, startAngle);
+  const endRayLimit = maxDistanceAlongTargetRay(center, secondRayTarget, endAngle);
+  const radius = Math.min(endDistance, startRayLimit, endRayLimit);
+  if (!Number.isFinite(radius) || radius < 12) {
+    return null;
+  }
+
+  return {
+    type: "label",
+    labelType: "angle",
+    x: center.x,
+    y: center.y,
+    r: radius,
+    ang1: startAngle,
+    ang2: endAngle,
+    text: state.angleCurveAutoLabel ? `${formatAngle(delta * 180 / Math.PI)}°` : "",
+    size: state.labelTextSize,
+    color: state.color
+  };
 }
 
 function findNearestCircleSnapTarget(point, radius) {
@@ -3385,6 +4227,9 @@ function scaleShapesAboutOrigin(factor) {
     } else if (shape.type === "point" || shape.type === "label") {
       shape.x = Math.round(ox + (shape.x - ox) * factor);
       shape.y = Math.round(oy + (shape.y - oy) * factor);
+      if (shape.type === "label" && shape.labelType === "angle") {
+        shape.r = Math.max(1, Math.round(shape.r * factor));
+      }
     }
   }
   markupOutput.value = state.shapes.map(shapeToMarkup).filter(Boolean).join("\n");
@@ -3539,11 +4384,23 @@ function addLabel(point) {
     x: point.x,
     y: point.y,
     text,
+    size: state.labelTextSize,
     color: state.color
   });
   rebuildMarkup();
   render();
   setStatus(`Added label id=${id}.`);
+}
+
+function addAngleCurve(shape) {
+  pushUndoSnapshot();
+  const id = getNextId();
+  state.shapes.push({ ...shape, id });
+  rebuildMarkup();
+  render();
+  setStatus(shape.text
+    ? `Added angle curve id=${id} (${shape.text}).`
+    : `Added plain angle curve id=${id}.`);
 }
 
 function addPoint(point) {
@@ -3576,6 +4433,11 @@ canvas.addEventListener("mousemove", (event) => {
       const dx = currentPoint.x - state.moveDragPoint.x;
       const dy = currentPoint.y - state.moveDragPoint.y;
 
+      if (!state.moveDidChange && Math.hypot(dx, dy) < 3) {
+        render(currentPoint);
+        return;
+      }
+
       if (dx || dy) {
         if (!state.moveDidChange) {
           pushUndoSnapshot();
@@ -3591,6 +4453,31 @@ canvas.addEventListener("mousemove", (event) => {
       }
 
       render(currentPoint);
+      return;
+    }
+
+    if (state.mode === "angleCurve" && state.angleCurveStartTarget) {
+      const angleCurvePoint = toCanvasPoint(event);
+      const target = findNearestAngleCurveLineTarget(
+        angleCurvePoint,
+        state.snapRadius * 1.5,
+        state.angleCurveStartTarget.key
+      );
+      state.lastPointerPoint = angleCurvePoint;
+      state.hoverPoint = target;
+      state.draftCurrentPoint = target || angleCurvePoint;
+      state.angleCurveDraft = target ? buildAngleCurveDraft(state.angleCurveStartTarget, target) : null;
+      if (target && state.angleCurveDraft) {
+        setSnapInfo(snapInfoText("target: second line"));
+        setStatus(state.angleCurveDraft.text
+          ? `Angle Curve: ${state.angleCurveDraft.text}. Drag along the line to resize, then release.`
+          : "Plain Angle Curve: drag along the line to resize, then release.");
+      } else if (target) {
+        setSnapInfo(snapInfoText("target: invalid line pair"));
+      } else {
+        setSnapInfo(snapInfoText("target: second line"));
+      }
+      render(angleCurvePoint);
       return;
     }
 
@@ -3642,7 +4529,11 @@ canvas.addEventListener("mousemove", (event) => {
     return;
   }
 
-  if (state.mode === "line" && state.lineDrawMode === "diameter") {
+  if (state.mode === "angleCurve") {
+    const angleCurvePoint = toCanvasPoint(event);
+    state.hoverPoint = findNearestAngleCurveLineTarget(angleCurvePoint, state.snapRadius * 1.5);
+    setSnapInfo(snapInfoText(state.hoverPoint ? "target: first line" : "target: line"));
+  } else if (state.mode === "line" && state.lineDrawMode === "diameter") {
     if (event.shiftKey) {
       state.hoverPoint = null;
       setSnapInfo(snapInfoText("off (Shift)"));
@@ -3675,7 +4566,7 @@ canvas.addEventListener("mousemove", (event) => {
 
 canvas.addEventListener("mouseleave", () => {
   state.hoverPoint = null;
-  if (state.mode === "line") {
+  if (state.mode === "line" || state.mode === "angleCurve") {
     setSnapInfo(snapInfoText("target: none"));
   }
   if (!state.isDragging) {
@@ -3687,6 +4578,10 @@ canvas.addEventListener("mousedown", (event) => {
   const canvasPoint = toCanvasPoint(event);
 
   if (state.mode === "select") {
+    if (queueVertexHelperLineToggle(canvasPoint)) {
+      return;
+    }
+
     const hit = findShapeAtPoint(canvasPoint, { includePoints: !state.referenceImage });
     if (hit) {
       applySelectClick(hit);
@@ -3701,14 +4596,23 @@ canvas.addEventListener("mousedown", (event) => {
   }
 
   if (state.mode === "move") {
-    if (state.selection.size === 0) {
-      setStatus("Select one or more shapes before moving.", true);
+    const hit = findShapeAtPoint(canvasPoint, { includePoints: !state.referenceImage });
+
+    if (!hit) {
+      const detected = findDetectedImageObjectAtPoint(canvasPoint);
+      if (importDetectedImageObject(detected)) {
+        setStatus(`Selected detected ${detected.type}. Drag it on the next interaction to move it.`);
+        return;
+      }
+
+      applySelectClick(null);
+      setStatus("Move mode: click geometry to select it, then drag it on the next interaction.");
       return;
     }
 
-    const hit = findShapeAtPoint(canvasPoint);
-    if (!hit || !state.selection.has(hit)) {
-      setStatus("Press on a selected shape to move it.", true);
+    if (state.selection.size === 0 || !state.selection.has(hit)) {
+      applySelectClick(hit);
+      setStatus(`Selected ${hit.type} id=${hit.id}. Drag the selected geometry on the next interaction to move it.`);
       return;
     }
 
@@ -3720,7 +4624,7 @@ canvas.addEventListener("mousedown", (event) => {
     state.hoverPoint = null;
     state.draftPoint = point;
     state.draftCurrentPoint = point;
-    setStatus(`Moving ${state.selection.size} selected shape${state.selection.size === 1 ? "" : "s"}.`);
+    setStatus(`Drag to move ${state.selection.size} selected shape${state.selection.size === 1 ? "" : "s"}.`);
     render(point);
     return;
   }
@@ -3822,6 +4726,30 @@ canvas.addEventListener("mousedown", (event) => {
     return;
   }
 
+  if (state.mode === "angleCurve") {
+    const rawStart = toCanvasPoint(event);
+    const target = findNearestAngleCurveLineTarget(rawStart, state.snapRadius * 1.5);
+    if (!target) {
+      state.hoverPoint = null;
+      setSnapInfo(snapInfoText("target: line"));
+      setStatus("Angle Curve: press closer to the first line.", true);
+      render(rawStart);
+      return;
+    }
+
+    state.isDragging = true;
+    state.angleCurveStartTarget = target;
+    state.angleCurveDraft = null;
+    state.draftPoint = { x: target.x, y: target.y };
+    state.draftCurrentPoint = state.draftPoint;
+    state.lastPointerPoint = rawStart;
+    state.hoverPoint = target;
+    setSnapInfo(snapInfoText("target: first line"));
+    setStatus("First line snapped. Drag along a different intersecting line to size the angle curve.");
+    render(rawStart);
+    return;
+  }
+
   state.isDragging = true;
   state.hoverPoint = null;
   state.pendingDiameterCircle = null;
@@ -3909,7 +4837,41 @@ canvas.addEventListener("mouseup", (event) => {
     state.moveDidChange = false;
     setStatus(moved
       ? `Moved ${state.selection.size} selected shape${state.selection.size === 1 ? "" : "s"}.`
-      : "Move canceled.");
+      : "Selection unchanged. Drag the selected geometry to move it.");
+    return;
+  }
+
+  if (state.mode === "angleCurve") {
+    if (!state.isDragging || !state.angleCurveStartTarget) {
+      return;
+    }
+
+    const rawEnd = toCanvasPoint(event);
+    const endTarget = findNearestAngleCurveLineTarget(
+      rawEnd,
+      state.snapRadius * 1.5,
+      state.angleCurveStartTarget.key
+    );
+    const angleCurve = endTarget
+      ? buildAngleCurveDraft(state.angleCurveStartTarget, endTarget)
+      : state.angleCurveDraft;
+
+    state.isDragging = false;
+    state.angleCurveStartTarget = null;
+    state.angleCurveDraft = null;
+    state.draftPoint = null;
+    state.draftCurrentPoint = null;
+    state.lastPointerPoint = null;
+    state.hoverPoint = null;
+    setSnapInfo(snapInfoText("target: line"));
+
+    if (!angleCurve) {
+      render(rawEnd);
+      setStatus("Angle Curve needs two different intersecting lines. Start and release away from their intersection.", true);
+      return;
+    }
+
+    addAngleCurve(angleCurve);
     return;
   }
 
@@ -3954,8 +4916,10 @@ canvas.addEventListener("mouseup", (event) => {
   state.draftPoint = null;
   state.draftCurrentPoint = null;
   state.pendingDiameterCircle = null;
+  state.angleCurveStartTarget = null;
+  state.angleCurveDraft = null;
   state.hoverPoint = null;
-  if (state.mode === "line") {
+  if (state.mode === "line" || state.mode === "angleCurve") {
     setSnapInfo(snapInfoText("target: none"));
   }
 
@@ -3983,6 +4947,13 @@ canvas.addEventListener("mouseup", (event) => {
 });
 
 canvas.addEventListener("dblclick", (event) => {
+  if (state.mode === "select") {
+    if (convertSolidVertexHelperLineAt(toCanvasPoint(event))) {
+      event.preventDefault();
+    }
+    return;
+  }
+
   if (state.mode !== "angle") {
     return;
   }
@@ -3999,9 +4970,11 @@ circleBtn.addEventListener("click", () => setMode("circle"));
 parabolaBtn.addEventListener("click", () => setMode("parabola"));
 labelBtn.addEventListener("click", () => setMode("label"));
 angleBtn.addEventListener("click", () => setMode("angle"));
+angleCurveBtn.addEventListener("click", () => setMode("angleCurve"));
 deleteBtn.addEventListener("click", () => deleteSelectionWithConfirm());
 
 undoBtn.addEventListener("click", () => {
+  cancelPendingVertexHelperClick();
   state.draftPoint = null;
   state.draftCurrentPoint = null;
   state.isDragging = false;
@@ -4021,6 +4994,7 @@ undoBtn.addEventListener("click", () => {
 });
 
 clearBtn.addEventListener("click", () => {
+  cancelPendingVertexHelperClick();
   if (state.shapes.length > 0) {
     pushUndoSnapshot();
   }
@@ -4064,6 +5038,12 @@ if (verticesLinesBtn) {
   });
 }
 
+if (keepSelectedLinesBtn) {
+  keepSelectedLinesBtn.addEventListener("click", () => {
+    toggleKeepSelectedVertexLines();
+  });
+}
+
 if (allVerticesAnglesBtn) {
   allVerticesAnglesBtn.addEventListener("click", () => {
     toggleAllVertexAngles();
@@ -4075,6 +5055,10 @@ if (colorPickerEl) {
     setDrawingColor(event.target.value);
   });
 }
+
+labelSizeInputEl?.addEventListener("change", (event) => {
+  setLabelTextSize(event.target.value);
+});
 
 for (const button of quickColorButtons) {
   button.addEventListener("click", () => {
@@ -4106,8 +5090,10 @@ window.addEventListener("mouseup", () => {
   state.draftPoint = null;
   state.draftCurrentPoint = null;
   state.pendingDiameterCircle = null;
+  state.angleCurveStartTarget = null;
+  state.angleCurveDraft = null;
   state.hoverPoint = null;
-  if (state.mode === "line") {
+  if (state.mode === "line" || state.mode === "angleCurve") {
     setSnapInfo(snapInfoText("target: none"));
   }
   render();
@@ -4145,6 +5131,12 @@ window.addEventListener("keydown", (event) => {
   }
 
   if (event.metaKey || event.ctrlKey || event.altKey) {
+    return;
+  }
+
+  if (key === "q") {
+    event.preventDefault();
+    toggleAngleCurveAutoLabel();
     return;
   }
 
@@ -4272,6 +5264,7 @@ canvas.addEventListener("mousedown", () => {
 setMode("select");
 rebuildMarkup();
 syncColorUi();
+syncLabelTextSizeUi();
 resizeCanvasToFit();
 
 // ── AI Draw ──
@@ -4289,8 +5282,11 @@ const aiImagePreviewWrapEl = document.getElementById("aiImagePreviewWrap");
 const aiImageMetaEl = document.getElementById("aiImageMeta");
 const markupLoadBtn = document.getElementById("markupLoadBtn");
 const markupSaveBtn = document.getElementById("markupSaveBtn");
+const topMarkupLoadBtn = document.getElementById("topMarkupLoadBtn");
+const topMarkupSaveBtn = document.getElementById("topMarkupSaveBtn");
 
 let aiImagePayload = null;
+let currentMarkupFileName = "markup.txt";
 
 function setAiStatus(msg, type = "") {
   aiStatusEl.textContent = msg;
@@ -5996,14 +6992,71 @@ aiPromptEl.addEventListener("keydown", (e) => {
   if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) runAiDraw();
 });
 
-markupSaveBtn.addEventListener("click", () => {
+function normalizeMarkupFileName(value) {
+  const cleaned = String(value || "")
+    .trim()
+    .replace(/[\\/:*?"<>|]+/g, "-")
+    .replace(/\s+/g, " ");
+  if (!cleaned) return "";
+  return /\.txt$/i.test(cleaned) ? cleaned : `${cleaned}.txt`;
+}
+
+function saveMarkupFile() {
+  const requestedName = window.prompt("Enter file name:", currentMarkupFileName);
+  if (requestedName === null) {
+    setStatus("Save canceled.");
+    return;
+  }
+
+  const fileName = normalizeMarkupFileName(requestedName);
+  if (!fileName) {
+    setStatus("Enter a file name before saving.", true);
+    return;
+  }
+
+  currentMarkupFileName = fileName;
   const blob = new Blob([markupOutput.value], { type: "text/plain" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = "markup.txt";
+  a.download = fileName;
   a.click();
   URL.revokeObjectURL(a.href);
-});
+  setStatus(`Saved current markup to ${fileName}.`);
+}
+
+function loadMarkupFile() {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".txt,text/plain";
+  input.onchange = () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = String(event.target?.result || "");
+      const parsed = text.split(/\r?\n/).map(parseMarkupLine).filter(Boolean);
+      pushUndoSnapshot();
+      state.shapes = parsed;
+      state.selection.clear();
+      state.angleAnalysis = null;
+      removeDuplicatePointShapes();
+      markupOutput.value = state.shapes.map(shapeToMarkup).filter(Boolean).join("\n");
+      updateEquationLegend();
+      updateMarkupHighlight([]);
+      render();
+      currentMarkupFileName = normalizeMarkupFileName(file.name) || "markup.txt";
+      setStatus(`Loaded ${state.shapes.length} markup item${state.shapes.length === 1 ? "" : "s"} from ${file.name}.`);
+    };
+    reader.onerror = () => setStatus(`Could not load ${file.name}.`, true);
+    reader.readAsText(file);
+  };
+  input.click();
+}
+
+markupLoadBtn?.addEventListener("click", loadMarkupFile);
+topMarkupLoadBtn?.addEventListener("click", loadMarkupFile);
+markupSaveBtn?.addEventListener("click", saveMarkupFile);
+topMarkupSaveBtn?.addEventListener("click", saveMarkupFile);
 
 function syncMarkupCursorToCanvas() {
   if (state.mode !== "select") return;
@@ -6037,6 +7090,7 @@ function syncMarkupCursorToCanvas() {
   state.selection = new Set(
     state.shapes.filter(s => coveredMarkup.has(shapeToMarkup(s)))
   );
+  syncLabelTextSizeFromSelection();
   state.equationEditMode = false;
   updateEquationLegend();
 
@@ -6221,28 +7275,4 @@ createFloatingLegendController({
   minWidth: 320,
   minHeight: 320,
   label: "AI Draw"
-});
-
-markupLoadBtn.addEventListener("click", () => {
-  const input = document.createElement("input");
-  input.type = "file";
-  input.accept = ".txt,text/plain";
-  input.onchange = () => {
-    const file = input.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const text = e.target.result;
-      markupOutput.value = text;
-      const parsed = text.split("\n").map(parseMarkupLine).filter(Boolean);
-      pushUndoSnapshot();
-      state.shapes = parsed;
-      removeDuplicatePointShapes();
-      markupOutput.value = state.shapes.map(shapeToMarkup).filter(Boolean).join("\n");
-      state.angleAnalysis = null;
-      render();
-    };
-    reader.readAsText(file);
-  };
-  input.click();
 });

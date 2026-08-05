@@ -129,9 +129,16 @@
           <div class="legend-item solver-item">
             <div class="legend-copy">
               <span class="legend-title">Vertices Lines</span>
-              <span class="legend-text">Toggle dashed helper lines between every detected vertex point.</span>
+              <span class="legend-text">Toggle helper lines between every detected vertex. Choose a Style color, then click a dashed helper line in Select mode to make it solid with that color. Double-click a solid line to convert it into a permanent markup line.</span>
             </div>
             <button id="verticesLinesBtn" type="button" class="solver-toggle-btn">Off</button>
+          </div>
+          <div class="legend-item solver-item">
+            <div class="legend-copy">
+              <span class="legend-title">Keep Selected Lines</span>
+              <span class="legend-text">Keep solid selected helper lines visible when Vertices Lines is turned off. Dashed unselected lines are hidden.</span>
+            </div>
+            <button id="keepSelectedLinesBtn" type="button" class="solver-toggle-btn">Off</button>
           </div>
           <div class="legend-item solver-item">
             <div class="legend-copy">
@@ -140,6 +147,53 @@
             </div>
             <button id="allVerticesAnglesBtn" type="button" class="solver-toggle-btn">Off</button>
           </div>
+        </div>
+        </details>
+        <details id="calculatorLegend" class="top-legend calculator-legend">
+        <summary>Calculator</summary>
+        <div class="legend-panel calculator-panel">
+          <label class="calculator-expression-label" for="calculatorExpression">Expression</label>
+          <input id="calculatorExpression" class="calculator-expression" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" aria-label="Calculator expression" placeholder="e.g. sin(30) + sqrt(16)" />
+          <div class="calculator-result-row">
+            <span class="calculator-result-label">Result</span>
+            <output id="calculatorResult" class="calculator-result" for="calculatorExpression" aria-live="polite">0</output>
+          </div>
+          <div class="calculator-keypad" aria-label="Calculator keypad">
+            <button type="button" class="calculator-key calculator-key-function" data-calculator-value="sin(">sin</button>
+            <button type="button" class="calculator-key calculator-key-function" data-calculator-value="cos(">cos</button>
+            <button type="button" class="calculator-key calculator-key-function" data-calculator-value="tan(">tan</button>
+            <button type="button" class="calculator-key calculator-key-function" data-calculator-value="sqrt(">√</button>
+            <button type="button" class="calculator-key calculator-key-operator" data-calculator-value="^">xʸ</button>
+
+            <button type="button" class="calculator-key" data-calculator-value="7">7</button>
+            <button type="button" class="calculator-key" data-calculator-value="8">8</button>
+            <button type="button" class="calculator-key" data-calculator-value="9">9</button>
+            <button type="button" class="calculator-key calculator-key-operator" data-calculator-value="(">(</button>
+            <button type="button" class="calculator-key calculator-key-operator" data-calculator-value=")">)</button>
+
+            <button type="button" class="calculator-key" data-calculator-value="4">4</button>
+            <button type="button" class="calculator-key" data-calculator-value="5">5</button>
+            <button type="button" class="calculator-key" data-calculator-value="6">6</button>
+            <button type="button" class="calculator-key calculator-key-operator" data-calculator-value="*">×</button>
+            <button type="button" class="calculator-key calculator-key-operator" data-calculator-value="/">÷</button>
+
+            <button type="button" class="calculator-key" data-calculator-value="1">1</button>
+            <button type="button" class="calculator-key" data-calculator-value="2">2</button>
+            <button type="button" class="calculator-key" data-calculator-value="3">3</button>
+            <button type="button" class="calculator-key calculator-key-operator" data-calculator-value="+">+</button>
+            <button type="button" class="calculator-key calculator-key-operator" data-calculator-value="-">−</button>
+
+            <button type="button" class="calculator-key" data-calculator-value="0">0</button>
+            <button type="button" class="calculator-key" data-calculator-value=".">.</button>
+            <button type="button" class="calculator-key calculator-key-function" data-calculator-value="pi">π</button>
+            <button type="button" class="calculator-key calculator-key-function" data-calculator-value="ans">Ans</button>
+            <button id="calculatorBackspaceBtn" type="button" class="calculator-key" aria-label="Backspace">⌫</button>
+          </div>
+          <div class="calculator-actions">
+            <button id="calculatorClearBtn" type="button" class="calculator-action-btn">Clear</button>
+            <button id="calculatorEqualsBtn" type="button" class="calculator-action-btn calculator-equals-btn">Calculate</button>
+          </div>
+          <span class="calculator-note">Keyboard ready: type numbers, operators, function names, or X for multiply; press Enter or = to calculate, Backspace to edit, and Escape to clear. Trigonometric functions use degrees.</span>
         </div>
         </details>
         <details class="top-legend style-legend">
@@ -177,8 +231,28 @@
               </button>
             </div>
           </div>
+          <div class="label-size-control">
+            <label for="labelSizeInput">
+              <span class="tool-label">Label Text Size</span>
+              <span class="label-size-hint">Applies to new and selected labels</span>
+            </label>
+            <div class="label-size-row">
+              <input id="labelSizeInput" type="number" min="8" max="120" step="1" value="16" inputmode="numeric" aria-label="Label text size in pixels" />
+              <span>px</span>
+            </div>
+          </div>
         </div>
         </details>
+        <div class="top-file-actions" role="group" aria-label="Markup file actions">
+          <button id="topMarkupLoadBtn" type="button" class="top-file-btn" title="Load a markup text file">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7.5 10.5L12 15l4.5-4.5"/><path d="M5 19h14"/></svg>
+            <span>Load</span>
+          </button>
+          <button id="topMarkupSaveBtn" type="button" class="top-file-btn" title="Save the current markup text file">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20V9M7.5 13.5L12 9l4.5 4.5"/><path d="M5 5h14"/></svg>
+            <span>Save</span>
+          </button>
+        </div>
         <details class="top-shortcuts">
         <summary>Help</summary>
         <ul class="shortcut-list">
@@ -198,6 +272,7 @@
           <li><span class="shortcut-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 19L12 5l7 14z"/></svg></span><span class="keycap">Shift</span><span>Snap off while drawing</span></li>
           <li><span class="shortcut-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 18h14"/><path d="M5 18l10-8"/><path d="M9 18a4 4 0 0 0 2.9-1.2"/></svg></span><span class="keycap">Enter</span><span>Confirm angle edit</span></li>
           <li><span class="shortcut-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M18 6L6 18M6 6l12 12"/></svg></span><span class="keycap">Esc</span><span>Cancel angle edit</span></li>
+          <li><span class="shortcut-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 18h14"/><path d="M5 18l10-8"/><path d="M9 18a4 4 0 0 0 2.9-1.2"/><path d="M15 6h5M17.5 3.5v5"/></svg></span><span class="keycap">Q</span><span>Toggle Angle Curve auto label / plain curve</span></li>
           <li><span class="shortcut-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6"/></svg></span><span class="keycap">&lt;</span><span>Fewer angle decimals</span></li>
           <li><span class="shortcut-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></svg></span><span class="keycap">&gt;</span><span>More angle decimals</span></li>
           <li><span class="shortcut-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/><circle cx="12" cy="12" r="7" fill="none"/></svg></span><span class="keycap">0</span><span>Alt angle view (same as double-click point)</span></li>
@@ -296,6 +371,12 @@
                   <svg viewBox="0 0 24 24" focusable="false"><path d="M5 18h14"/><path d="M5 18l10-8"/><path d="M9 18a4 4 0 0 0 2.9-1.2"/></svg>
                 </span>
                 <span class="tool-label">Angle</span>
+              </button>
+              <button id="angleCurveBtn" type="button">
+                <span class="tool-icon" aria-hidden="true">
+                  <svg viewBox="0 0 24 24" focusable="false"><path d="M4 19l7-13"/><path d="M4 19l15-7"/><path d="M7.5 15.5a5 5 0 0 1 4.4-1.7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+                </span>
+                <span class="tool-label">Angle Curve</span>
               </button>
             </div>
           </details>

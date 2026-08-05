@@ -95,22 +95,19 @@ const AI_MODELS = [
     id: "gpt-5.6-terra",
     label: "GPT-5.6 Terra",
     description: "Recommended - fast and accurate",
-    reasoningEffort: "low",
-    imageOutputTokens: 6000
+    reasoningEffort: "low"
   },
   {
     id: "gpt-5.6-sol",
     label: "GPT-5.6 Sol",
     description: "Maximum accuracy - slower",
-    reasoningEffort: "medium",
-    imageOutputTokens: 10000
+    reasoningEffort: "low"
   },
   {
     id: "gpt-5.6-luna",
     label: "GPT-5.6 Luna",
     description: "Fast and economical",
-    reasoningEffort: "none",
-    imageOutputTokens: 4000
+    reasoningEffort: "none"
   }
 ];
 
@@ -132,93 +129,22 @@ function isSupportedImageDataUrl(value) {
 
 const AI_OUTPUT_FORMAT = {
   type: "json_schema",
-  name: "geometry_scene",
+  name: "geometry_markup",
   strict: true,
   schema: {
     type: "object",
     additionalProperties: false,
     properties: {
-      circles: {
-        type: "array",
-        description: "Every distinct visible circle, including nested or tangent circles.",
-        items: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            cx: { type: "number" },
-            cy: { type: "number" },
-            r: { type: "number" },
-            color: { type: "string", enum: ["#1a1a2e", "#0d9488", "#d97706", "#dc2626", "#2563eb"] }
-          },
-          required: ["cx", "cy", "r", "color"]
-        }
-      },
-      lines: {
-        type: "array",
-        description: "Every distinct visible straight segment, with endpoints at its actual visible boundaries.",
-        items: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            x1: { type: "number" },
-            y1: { type: "number" },
-            x2: { type: "number" },
-            y2: { type: "number" },
-            color: { type: "string", enum: ["#1a1a2e", "#0d9488", "#d97706", "#dc2626", "#2563eb"] }
-          },
-          required: ["x1", "y1", "x2", "y2", "color"]
-        }
-      },
-      points: {
-        type: "array",
-        description: "Only explicitly marked or requested points.",
-        items: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            x: { type: "number" },
-            y: { type: "number" },
-            color: { type: "string", enum: ["#1a1a2e", "#0d9488", "#d97706", "#dc2626", "#2563eb"] }
-          },
-          required: ["x", "y", "color"]
-        }
-      },
-      parabolas: {
-        type: "array",
-        items: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            vx: { type: "number" },
-            vy: { type: "number" },
-            fx: { type: "number" },
-            fy: { type: "number" },
-            color: { type: "string", enum: ["#1a1a2e", "#0d9488", "#d97706", "#dc2626", "#2563eb"] }
-          },
-          required: ["vx", "vy", "fx", "fy", "color"]
-        }
-      },
-      labels: {
-        type: "array",
-        description: "Visible dark geometry annotations only; exclude watermarks and decorative text.",
-        items: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            x: { type: "number" },
-            y: { type: "number" },
-            text: { type: "string" },
-            color: { type: "string", enum: ["#1a1a2e", "#0d9488", "#d97706", "#dc2626", "#2563eb"] }
-          },
-          required: ["x", "y", "text", "color"]
-        }
+      markup: {
+        type: "string",
+        description: "Validated geometry markup with exactly one shape per line and no Markdown."
       },
       summary: {
         type: "string",
         description: "A short description of the geometry that was reconstructed or generated."
       }
     },
-    required: ["circles", "lines", "points", "parabolas", "labels", "summary"]
+    required: ["markup", "summary"]
   }
 };
 
@@ -306,7 +232,9 @@ function normalizeAiMarkup(markup) {
     }
 
     if (item.shape === "label") {
-      return `label id=${id} visible=1 type=text x=${formatAiNumber(n("x"))} y=${formatAiNumber(n("y"))} ang1=0 ang2=0 text=${quoteAiLabel(p.text)} color=${color}`;
+      const requestedSize = Number(p.size);
+      const size = Number.isFinite(requestedSize) ? Math.max(8, Math.min(120, Math.round(requestedSize))) : 16;
+      return `label id=${id} visible=1 type=text x=${formatAiNumber(n("x"))} y=${formatAiNumber(n("y"))} ang1=0 ang2=0 text=${quoteAiLabel(p.text)} size=${size} color=${color}`;
     }
 
     throw new Error(`AI output line ${item.lineNumber} uses unsupported shape "${item.shape}".`);
@@ -315,279 +243,6 @@ function normalizeAiMarkup(markup) {
   return {
     markup: lines.join("\n"),
     shapeCount: lines.length
-  };
-}
-
-function requireGeometryNumber(shape, key, kind, index) {
-  const value = Number(shape?.[key]);
-  if (!Number.isFinite(value) || Math.abs(value) > 10000) {
-    throw new Error(`AI ${kind} ${index + 1} has an invalid ${key} value.`);
-  }
-  return value;
-}
-
-function normalizeGeometryColor(value) {
-  const color = String(value || "").toLowerCase();
-  return AI_ALLOWED_COLORS.has(color) ? color : "#1a1a2e";
-}
-
-function infiniteLineIntersection(first, second) {
-  const ax = first.x2 - first.x1;
-  const ay = first.y2 - first.y1;
-  const bx = second.x2 - second.x1;
-  const by = second.y2 - second.y1;
-  const denominator = ax * by - ay * bx;
-  if (Math.abs(denominator) < 1e-8) return null;
-  const dx = second.x1 - first.x1;
-  const dy = second.y1 - first.y1;
-  const t = (dx * by - dy * bx) / denominator;
-  return { x: first.x1 + ax * t, y: first.y1 + ay * t };
-}
-
-function pointToSegmentDistance(point, line) {
-  const dx = line.x2 - line.x1;
-  const dy = line.y2 - line.y1;
-  const lengthSquared = dx * dx + dy * dy;
-  if (lengthSquared < 1e-8) return Math.hypot(point.x - line.x1, point.y - line.y1);
-  const t = Math.max(0, Math.min(1, ((point.x - line.x1) * dx + (point.y - line.y1) * dy) / lengthSquared));
-  return Math.hypot(point.x - (line.x1 + dx * t), point.y - (line.y1 + dy * t));
-}
-
-function snapLineEndpointsToIntersections(lines, tolerance = 12) {
-  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
-    const line = lines[lineIndex];
-    for (const prefix of ["1", "2"]) {
-      const endpoint = { x: line[`x${prefix}`], y: line[`y${prefix}`] };
-      let best = null;
-      let bestDistance = tolerance;
-      for (let otherIndex = 0; otherIndex < lines.length; otherIndex += 1) {
-        if (otherIndex === lineIndex) continue;
-        const other = lines[otherIndex];
-        const intersection = infiniteLineIntersection(line, other);
-        if (!intersection || pointToSegmentDistance(intersection, other) > tolerance) continue;
-        const distance = Math.hypot(endpoint.x - intersection.x, endpoint.y - intersection.y);
-        if (distance < bestDistance) {
-          bestDistance = distance;
-          best = intersection;
-        }
-      }
-      if (best) {
-        line[`x${prefix}`] = best.x;
-        line[`y${prefix}`] = best.y;
-      }
-    }
-  }
-}
-
-function snapLineEndpointsToCircles(lines, circles, tolerance = 16) {
-  for (const line of lines) {
-    for (const prefix of ["1", "2"]) {
-      const xKey = `x${prefix}`;
-      const yKey = `y${prefix}`;
-      const endpoint = { x: line[xKey], y: line[yKey] };
-      let best = null;
-      let bestError = tolerance;
-      for (const circle of circles) {
-        const dx = endpoint.x - circle.cx;
-        const dy = endpoint.y - circle.cy;
-        const distance = Math.hypot(dx, dy);
-        const error = Math.abs(distance - circle.r);
-        if (distance > 1e-6 && error < bestError) {
-          bestError = error;
-          best = {
-            x: circle.cx + dx * circle.r / distance,
-            y: circle.cy + dy * circle.r / distance
-          };
-        }
-      }
-      if (best) {
-        line[xKey] = best.x;
-        line[yKey] = best.y;
-      }
-    }
-  }
-}
-
-function clusterSharedLineEndpoints(lines, tolerance = 10) {
-  const endpoints = [];
-  for (const line of lines) {
-    endpoints.push({ line, xKey: "x1", yKey: "y1", x: line.x1, y: line.y1 });
-    endpoints.push({ line, xKey: "x2", yKey: "y2", x: line.x2, y: line.y2 });
-  }
-  const parent = endpoints.map((_, index) => index);
-  const find = (index) => {
-    while (parent[index] !== index) {
-      parent[index] = parent[parent[index]];
-      index = parent[index];
-    }
-    return index;
-  };
-  const join = (a, b) => {
-    const rootA = find(a);
-    const rootB = find(b);
-    if (rootA !== rootB) parent[rootB] = rootA;
-  };
-  for (let i = 0; i < endpoints.length; i += 1) {
-    for (let j = i + 1; j < endpoints.length; j += 1) {
-      if (Math.hypot(endpoints[i].x - endpoints[j].x, endpoints[i].y - endpoints[j].y) <= tolerance) {
-        join(i, j);
-      }
-    }
-  }
-  const groups = new Map();
-  endpoints.forEach((endpoint, index) => {
-    const root = find(index);
-    if (!groups.has(root)) groups.set(root, []);
-    groups.get(root).push(endpoint);
-  });
-  for (const group of groups.values()) {
-    if (group.length < 2) continue;
-    const x = group.reduce((sum, endpoint) => sum + endpoint.x, 0) / group.length;
-    const y = group.reduce((sum, endpoint) => sum + endpoint.y, 0) / group.length;
-    for (const endpoint of group) {
-      endpoint.line[endpoint.xKey] = x;
-      endpoint.line[endpoint.yKey] = y;
-    }
-  }
-}
-
-function correctNearTangentCircles(circles, tolerance = 16) {
-  for (let i = 0; i < circles.length; i += 1) {
-    for (let j = i + 1; j < circles.length; j += 1) {
-      const first = circles[i];
-      const second = circles[j];
-      const distance = Math.hypot(first.cx - second.cx, first.cy - second.cy);
-      const larger = first.r >= second.r ? first : second;
-      const smaller = larger === first ? second : first;
-      const internalError = Math.abs(distance + smaller.r - larger.r);
-      if (distance > 1 && internalError <= tolerance) {
-        smaller.r = Math.max(1, larger.r - distance);
-        continue;
-      }
-      const externalError = Math.abs(distance - first.r - second.r);
-      if (externalError <= tolerance && distance > larger.r + 1) {
-        smaller.r = Math.max(1, distance - larger.r);
-      }
-    }
-  }
-}
-
-function postProcessAiGeometry(geometry) {
-  const circles = geometry.circles.filter((circle, index, all) =>
-    !all.slice(0, index).some((other) =>
-      Math.hypot(circle.cx - other.cx, circle.cy - other.cy) <= 5 && Math.abs(circle.r - other.r) <= 5
-    )
-  );
-  const lines = geometry.lines.filter((line, index, all) =>
-    !all.slice(0, index).some((other) => {
-      const sameDirection = Math.hypot(line.x1 - other.x1, line.y1 - other.y1) <= 5 &&
-        Math.hypot(line.x2 - other.x2, line.y2 - other.y2) <= 5;
-      const reverseDirection = Math.hypot(line.x1 - other.x2, line.y1 - other.y2) <= 5 &&
-        Math.hypot(line.x2 - other.x1, line.y2 - other.y1) <= 5;
-      return sameDirection || reverseDirection;
-    })
-  );
-
-  correctNearTangentCircles(circles);
-  clusterSharedLineEndpoints(lines, 14);
-  snapLineEndpointsToIntersections(lines, 10);
-  snapLineEndpointsToCircles(lines, circles);
-  clusterSharedLineEndpoints(lines);
-
-  return { ...geometry, circles, lines };
-}
-
-function normalizeAiGeometry(output) {
-  const requiredArrays = ["circles", "lines", "points", "parabolas", "labels"];
-  for (const key of requiredArrays) {
-    if (!Array.isArray(output?.[key])) {
-      throw new Error(`OpenAI returned an invalid ${key} collection.`);
-    }
-  }
-
-  const geometry = {
-    circles: output.circles.map((shape, index) => {
-      const r = requireGeometryNumber(shape, "r", "circle", index);
-      if (r < 1 || r > 2200) throw new Error(`AI circle ${index + 1} has an invalid radius.`);
-      return {
-        cx: requireGeometryNumber(shape, "cx", "circle", index),
-        cy: requireGeometryNumber(shape, "cy", "circle", index),
-        r,
-        color: normalizeGeometryColor(shape.color)
-      };
-    }),
-    lines: output.lines.map((shape, index) => {
-      const line = {
-        x1: requireGeometryNumber(shape, "x1", "line", index),
-        y1: requireGeometryNumber(shape, "y1", "line", index),
-        x2: requireGeometryNumber(shape, "x2", "line", index),
-        y2: requireGeometryNumber(shape, "y2", "line", index),
-        color: normalizeGeometryColor(shape.color)
-      };
-      if (Math.hypot(line.x2 - line.x1, line.y2 - line.y1) < 1) {
-        throw new Error(`AI line ${index + 1} is too short to draw.`);
-      }
-      return line;
-    }),
-    points: output.points.map((shape, index) => ({
-      x: requireGeometryNumber(shape, "x", "point", index),
-      y: requireGeometryNumber(shape, "y", "point", index),
-      color: normalizeGeometryColor(shape.color)
-    })),
-    parabolas: output.parabolas.map((shape, index) => {
-      const parabola = {
-        vx: requireGeometryNumber(shape, "vx", "parabola", index),
-        vy: requireGeometryNumber(shape, "vy", "parabola", index),
-        fx: requireGeometryNumber(shape, "fx", "parabola", index),
-        fy: requireGeometryNumber(shape, "fy", "parabola", index),
-        color: normalizeGeometryColor(shape.color)
-      };
-      if (Math.hypot(parabola.fx - parabola.vx, parabola.fy - parabola.vy) < 1) {
-        throw new Error(`AI parabola ${index + 1} has an invalid focus.`);
-      }
-      return parabola;
-    }),
-    labels: output.labels.map((shape, index) => ({
-      x: requireGeometryNumber(shape, "x", "label", index),
-      y: requireGeometryNumber(shape, "y", "label", index),
-      text: String(shape.text || "").trim().slice(0, 120),
-      color: normalizeGeometryColor(shape.color)
-    })).filter((shape) => shape.text)
-  };
-
-  const rawCount = requiredArrays.reduce((count, key) => count + geometry[key].length, 0);
-  if (rawCount === 0) throw new Error("OpenAI returned no drawable shapes.");
-  if (rawCount > 200) throw new Error("OpenAI returned too many shapes (maximum 200).");
-
-  const processed = postProcessAiGeometry(geometry);
-  const markupLines = [];
-  const add = (line) => markupLines.push(line.replace("id=N", `id=${markupLines.length + 1}`));
-  for (const circle of processed.circles) {
-    add(`circle id=N visible=1 cx=${formatAiNumber(circle.cx)} cy=${formatAiNumber(circle.cy)} r=${formatAiNumber(circle.r)} color=${circle.color}`);
-  }
-  for (const line of processed.lines) {
-    add(`line id=N visible=1 x1=${formatAiNumber(line.x1)} y1=${formatAiNumber(line.y1)} x2=${formatAiNumber(line.x2)} y2=${formatAiNumber(line.y2)} color=${line.color}`);
-  }
-  for (const point of processed.points) {
-    add(`point id=N visible=1 x=${formatAiNumber(point.x)} y=${formatAiNumber(point.y)} color=${point.color}`);
-  }
-  for (const parabola of processed.parabolas) {
-    add(`parabola id=N visible=1 vx=${formatAiNumber(parabola.vx)} vy=${formatAiNumber(parabola.vy)} fx=${formatAiNumber(parabola.fx)} fy=${formatAiNumber(parabola.fy)} color=${parabola.color}`);
-  }
-  for (const label of processed.labels) {
-    add(`label id=N visible=1 type=text x=${formatAiNumber(label.x)} y=${formatAiNumber(label.y)} ang1=0 ang2=0 text=${quoteAiLabel(label.text)} color=${label.color}`);
-  }
-
-  return {
-    markup: markupLines.join("\n"),
-    shapeCount: markupLines.length,
-    counts: {
-      circles: processed.circles.length,
-      lines: processed.lines.length,
-      points: processed.points.length,
-      parabolas: processed.parabolas.length,
-      labels: processed.labels.length
-    }
   };
 }
 
@@ -636,9 +291,17 @@ Canvas coordinates:
 - Example: math point (1,1) is canvas (${550 + gridUnit},${350 - gridUnit}).
 
 Output contract:
-- Populate the separate circles, lines, points, parabolas, and labels arrays. Never encode geometry in summary.
-- Coordinates and radii are canvas pixels. Keep the result within the visible canvas.
-- Allowed colors are the schema values. For a black reference diagram, use #1a1a2e consistently unless the user asks for color.
+- Put the complete drawing in the JSON markup string, with exactly one shape per line and no headings, comments, or Markdown fences.
+- Allowed markup lines are:
+  point id=N visible=1 x=CX y=CY color=#hex
+  line id=N visible=1 x1=CX1 y1=CY1 x2=CX2 y2=CY2 color=#hex
+  circle id=N visible=1 cx=CX cy=CY r=R color=#hex
+  parabola id=N visible=1 vx=CX vy=CY fx=CX fy=CY color=#hex
+  label id=N visible=1 type=text x=CX y=CY ang1=0 ang2=0 text=TEXT size=16 color=#hex
+- Use unique positive IDs starting at 1. Coordinates and radii are canvas pixels; keep the result within the visible canvas.
+- Label size is text height in pixels from 8 to 120. Use 16 unless the user or reference image calls for another size.
+- Allowed colors are #1a1a2e, #0d9488, #d97706, #dc2626, and #2563eb. For a black reference diagram, use #1a1a2e consistently unless the user asks for color.
+- The summary is descriptive only; never put geometry or markup headings such as "circles:" in the markup string.
 - Return only the structured JSON required by the schema.
 
 Reference-image reconstruction:
@@ -679,7 +342,7 @@ Before returning, verify that the object inventory is complete, shared endpoints
       verbosity: "low",
       format: AI_OUTPUT_FORMAT
     },
-    max_output_tokens: imageDataUrl ? modelConfig.imageOutputTokens : 3000,
+    max_output_tokens: 2400,
     store: false
   });
 
@@ -708,7 +371,7 @@ Before returning, verify that the object inventory is complete, shared endpoints
               return;
             }
             const output = extractOpenAIOutput(parsed);
-            const normalized = normalizeAiGeometry(output);
+            const normalized = normalizeAiMarkup(output.markup);
             resolve({
               ...normalized,
               summary: typeof output.summary === "string" ? output.summary.trim().slice(0, 240) : "",
@@ -755,6 +418,11 @@ function startServer({ rootDir, defaultMarkupFile, port }) {
         return;
       }
 
+      if (request.method === "GET" && requestUrl.pathname === "/playback") {
+        serveStatic(response, path.join(publicDir, "playback.html"), "text/html");
+        return;
+      }
+
       if (request.method === "GET" && requestUrl.pathname === "/app.js") {
         serveStatic(response, path.join(publicDir, "app.js"), "application/javascript");
         return;
@@ -777,6 +445,16 @@ function startServer({ rootDir, defaultMarkupFile, port }) {
 
       if (request.method === "GET" && requestUrl.pathname === "/canvas.js") {
         serveStatic(response, path.join(publicDir, "canvas.js"), "application/javascript");
+        return;
+      }
+
+      if (request.method === "GET" && requestUrl.pathname === "/playback.css") {
+        serveStatic(response, path.join(publicDir, "playback.css"), "text/css");
+        return;
+      }
+
+      if (request.method === "GET" && requestUrl.pathname === "/playback.js") {
+        serveStatic(response, path.join(publicDir, "playback.js"), "application/javascript");
         return;
       }
 
@@ -815,7 +493,8 @@ function startServer({ rootDir, defaultMarkupFile, port }) {
           includeXmlDeclaration: false,
           width: Number.isFinite(width) ? width : undefined,
           height: Number.isFinite(height) ? height : undefined,
-          padding: Number.isFinite(padding) ? padding : 40
+          padding: Number.isFinite(padding) ? padding : 40,
+          fixedViewport: payload.fixedViewport === true
         });
 
         sendJson(response, 200, {
@@ -892,6 +571,5 @@ function startServer({ rootDir, defaultMarkupFile, port }) {
 module.exports = {
   startServer,
   extractOpenAIOutput,
-  normalizeAiMarkup,
-  normalizeAiGeometry
+  normalizeAiMarkup
 };
